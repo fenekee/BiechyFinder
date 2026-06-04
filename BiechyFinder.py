@@ -8,6 +8,7 @@ import subprocess
 import json
 import threading
 import time
+import re
 
 # Configuration globale
 ctk.set_appearance_mode("Dark")
@@ -28,7 +29,10 @@ class BiechyFinder(ctk.CTk):
         self.db_path = config.get("db_path", DEFAULT_DB)
         self.scan_paths = config.get("scan_paths", [])
         self.ssh_config = config.get("ssh_config", {"enabled": False, "host": "", "user": "", "pwd": "", "port": 22})
+        self.mistral_api_key = config.get("mistral_api_key", "")
+        self.mistral_model = config.get("mistral_model", "mistral-small-latest")
         self.is_indexing = False
+        self.chat_history = []  # Historique des messages pour le contexte Mistral
 
         # Layout principal
         self.grid_columnconfigure(1, weight=1)
@@ -37,7 +41,7 @@ class BiechyFinder(ctk.CTk):
         # --- Barre Latérale (Navigation) ---
         self.sidebar = ctk.CTkFrame(self, width=200, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_rowconfigure(5, weight=1)
+        self.sidebar.grid_rowconfigure(6, weight=1)
 
         self.logo = ctk.CTkLabel(self.sidebar, text="BiechyFinder", font=ctk.CTkFont(size=22, weight="bold"))
         self.logo.grid(row=0, column=0, padx=20, pady=(30, 40))
@@ -54,27 +58,35 @@ class BiechyFinder(ctk.CTk):
                                         command=lambda: self.select_frame("indexer"))
         self.btn_indexer.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
 
+        self.btn_chat = ctk.CTkButton(self.sidebar, text="🤖 Chat IA", font=ctk.CTkFont(size=14),
+                                       fg_color="transparent", text_color=("gray10", "gray90"),
+                                       hover_color=("gray70", "gray30"), anchor="w", height=40,
+                                       command=lambda: self.select_frame("chat"))
+        self.btn_chat.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
+
         self.btn_settings = ctk.CTkButton(self.sidebar, text="⚙️ Paramètres", font=ctk.CTkFont(size=14),
                                          fg_color="transparent", text_color=("gray10", "gray90"),
                                          hover_color=("gray70", "gray30"), anchor="w", height=40,
                                          command=lambda: self.select_frame("settings"))
-        self.btn_settings.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
+        self.btn_settings.grid(row=4, column=0, sticky="ew", padx=10, pady=5)
 
         # Status DB en bas de la sidebar
         self.db_status_indicator = ctk.CTkFrame(self.sidebar, height=10, width=10, corner_radius=5)
-        self.db_status_indicator.grid(row=6, column=0, padx=(20, 0), pady=(0, 20), sticky="w")
+        self.db_status_indicator.grid(row=7, column=0, padx=(20, 0), pady=(0, 20), sticky="w")
         self.update_db_indicator()
 
         self.db_status_label = ctk.CTkLabel(self.sidebar, text="DB Connectée", font=ctk.CTkFont(size=11))
-        self.db_status_label.grid(row=6, column=0, padx=(40, 20), pady=(0, 20), sticky="w")
+        self.db_status_label.grid(row=7, column=0, padx=(40, 20), pady=(0, 20), sticky="w")
 
         # --- Frames de Contenu ---
         self.search_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.indexer_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.chat_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.settings_frame = ctk.CTkFrame(self, fg_color="transparent")
 
         self.init_search_view()
         self.init_indexer_view()
+        self.init_chat_view()
         self.init_settings_view()
 
         # Sélection par défaut
@@ -103,7 +115,9 @@ class BiechyFinder(ctk.CTk):
                 "user": self.ssh_user.get(),
                 "pwd": self.ssh_pwd.get(),
                 "port": int(self.ssh_port.get() or 22)
-            }
+            },
+            "mistral_api_key": self.mistral_api_key,
+            "mistral_model": self.mistral_model
         }
         try:
             with open(CONFIG_FILE, 'w') as f:
@@ -115,11 +129,13 @@ class BiechyFinder(ctk.CTk):
         # Reset colors
         self.btn_search.configure(fg_color="transparent")
         self.btn_indexer.configure(fg_color="transparent")
+        self.btn_chat.configure(fg_color="transparent")
         self.btn_settings.configure(fg_color="transparent")
 
         # Hide all
         self.search_frame.grid_forget()
         self.indexer_frame.grid_forget()
+        self.chat_frame.grid_forget()
         self.settings_frame.grid_forget()
 
         # Show selected
@@ -129,6 +145,9 @@ class BiechyFinder(ctk.CTk):
         elif name == "indexer":
             self.indexer_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
             self.btn_indexer.configure(fg_color=("gray75", "gray25"))
+        elif name == "chat":
+            self.chat_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
+            self.btn_chat.configure(fg_color=("gray75", "gray25"))
         elif name == "settings":
             self.settings_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
             self.btn_settings.configure(fg_color=("gray75", "gray25"))
@@ -216,9 +235,24 @@ class BiechyFinder(ctk.CTk):
                                             command=self.start_indexing_thread)
         self.btn_start_index.grid(row=3, column=0, sticky="ew", pady=20)
 
+        # Bouton Résumé IA
+        self.summary_frame = ctk.CTkFrame(self.indexer_frame)
+        self.summary_frame.grid(row=5, column=0, sticky="ew", pady=10)
+        self.summary_frame.grid_columnconfigure(0, weight=1)
+
+        self.btn_generate_summary = ctk.CTkButton(self.summary_frame, text="\U0001f9e0 Générer le résumé IA du NAS",
+                                                   font=ctk.CTkFont(size=14, weight="bold"), height=45,
+                                                   fg_color="#6c3483", hover_color="#4a235a",
+                                                   command=self.start_summary_thread)
+        self.btn_generate_summary.grid(row=0, column=0, padx=20, pady=(15, 5), sticky="ew")
+
+        self.summary_status = ctk.CTkLabel(self.summary_frame, text=self._get_summary_status_text(),
+                                           font=ctk.CTkFont(size=11), text_color="gray")
+        self.summary_status.grid(row=1, column=0, padx=20, pady=(0, 15), sticky="w")
+
         # SSH Config (Collapsible-like)
         self.ssh_frame = ctk.CTkFrame(self.indexer_frame)
-        self.ssh_frame.grid(row=4, column=0, sticky="ew", pady=10)
+        self.ssh_frame.grid(row=6, column=0, sticky="ew", pady=10)
         
         self.var_ssh_enabled = tk.BooleanVar(value=self.ssh_config["enabled"])
         ctk.CTkCheckBox(self.ssh_frame, text="Utiliser SSH (Plus rapide pour NAS Linux)", 
@@ -243,6 +277,470 @@ class BiechyFinder(ctk.CTk):
         self.ssh_port.pack(side="left", padx=5)
         self.ssh_port.insert(0, str(self.ssh_config["port"]))
 
+    # --- CHAT IA VIEW ---
+    def init_chat_view(self):
+        self.chat_frame.grid_columnconfigure(0, weight=1)
+        self.chat_frame.grid_rowconfigure(1, weight=1)
+
+        # Header
+        header = ctk.CTkFrame(self.chat_frame, corner_radius=15, height=60)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        header.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(header, text="🤖 Assistant IA - Recherche de fichiers",
+                     font=ctk.CTkFont(size=18, weight="bold")).grid(row=0, column=0, padx=20, pady=15, sticky="w")
+
+        self.btn_clear_chat = ctk.CTkButton(header, text="🗑️ Effacer", width=100,
+                                            fg_color="#922b21", hover_color="#7b241c",
+                                            command=self.clear_chat)
+        self.btn_clear_chat.grid(row=0, column=1, padx=20, pady=15)
+
+        # Zone de messages (scrollable)
+        self.chat_messages = ctk.CTkScrollableFrame(self.chat_frame, corner_radius=10)
+        self.chat_messages.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
+        self.chat_messages.grid_columnconfigure(0, weight=1)
+
+        # Message d'accueil
+        self._add_bot_message("Salut ! 👋 Je suis ton assistant IA.\n\nDécris-moi ce que tu cherches en langage naturel, par exemple :\n• \"Trouve les fichiers PDF\"\n• \"Montre-moi les vidéos modifiées en 2024\"\n• \"Quels dossiers contiennent 'projet' ?\"\n\nJe vais interroger ta base de données pour toi !")
+
+        # Barre d'input en bas
+        input_frame = ctk.CTkFrame(self.chat_frame, corner_radius=15)
+        input_frame.grid(row=2, column=0, sticky="ew")
+        input_frame.grid_columnconfigure(0, weight=1)
+
+        self.chat_entry = ctk.CTkEntry(input_frame, placeholder_text="Décris ce que tu cherches...",
+                                       height=50, font=ctk.CTkFont(size=14), border_width=0)
+        self.chat_entry.grid(row=0, column=0, padx=20, pady=15, sticky="ew")
+        self.chat_entry.bind("<Return>", lambda e: self.send_chat_message())
+
+        self.btn_send_chat = ctk.CTkButton(input_frame, text="Envoyer ▶", height=50, width=120,
+                                           font=ctk.CTkFont(weight="bold"),
+                                           command=self.send_chat_message)
+        self.btn_send_chat.grid(row=0, column=1, padx=(0, 20), pady=15)
+
+    def _add_user_message(self, text):
+        """Ajoute une bulle de message utilisateur (alignée à droite)."""
+        container = ctk.CTkFrame(self.chat_messages, fg_color="transparent")
+        container.pack(fill="x", pady=5, padx=10)
+
+        bubble = ctk.CTkFrame(container, fg_color=("#2980b9", "#1a5276"), corner_radius=15)
+        bubble.pack(side="right", padx=(80, 0))
+
+        lbl = ctk.CTkLabel(bubble, text=text, wraplength=500, justify="left",
+                           font=ctk.CTkFont(size=13), text_color="white")
+        lbl.pack(padx=15, pady=10)
+
+    def _add_bot_message(self, text):
+        """Ajoute une bulle de message IA (alignée à gauche)."""
+        container = ctk.CTkFrame(self.chat_messages, fg_color="transparent")
+        container.pack(fill="x", pady=5, padx=10)
+
+        bubble = ctk.CTkFrame(container, fg_color=("gray80", "gray20"), corner_radius=15)
+        bubble.pack(side="left", padx=(0, 80))
+
+        lbl = ctk.CTkLabel(bubble, text=text, wraplength=500, justify="left",
+                           font=ctk.CTkFont(size=13))
+        lbl.pack(padx=15, pady=10)
+
+    def _add_file_results(self, rows):
+        """Ajoute les résultats de fichiers cliquables dans le chat."""
+        if not rows:
+            return
+
+        container = ctk.CTkFrame(self.chat_messages, fg_color="transparent")
+        container.pack(fill="x", pady=(0, 5), padx=10)
+
+        results_frame = ctk.CTkFrame(container, fg_color=("gray85", "gray17"), corner_radius=10)
+        results_frame.pack(side="left", padx=(0, 80), fill="x", expand=True)
+
+        max_display = min(len(rows), 20)
+        for i in range(max_display):
+            row_data = rows[i]
+            name = row_data[0]
+            path = row_data[1]
+            is_dir = row_data[2] if len(row_data) > 2 else 0
+
+            icon = "📁" if is_dir else "📄"
+            bg = ("gray90", "gray15") if i % 2 == 0 else ("gray95", "gray18")
+
+            file_row = ctk.CTkFrame(results_frame, fg_color=bg, corner_radius=5)
+            file_row.pack(fill="x", pady=1, padx=5)
+
+            lbl = ctk.CTkLabel(file_row, text=f"{icon} {name}", anchor="w", font=ctk.CTkFont(size=12))
+            lbl.pack(side="left", padx=10, pady=4)
+
+            path_lbl = ctk.CTkLabel(file_row, text=path, anchor="w", font=ctk.CTkFont(size=9), text_color="gray")
+            path_lbl.pack(side="left", padx=10, fill="x", expand=True)
+
+            file_row.bind("<Double-Button-1>", lambda e, p=path: self.open_path(p))
+            lbl.bind("<Double-Button-1>", lambda e, p=path: self.open_path(p))
+            path_lbl.bind("<Double-Button-1>", lambda e, p=path: self.open_path(p))
+
+        if len(rows) > max_display:
+            ctk.CTkLabel(results_frame, text=f"... et {len(rows) - max_display} autres résultats",
+                         text_color="gray", font=ctk.CTkFont(size=11)).pack(pady=5)
+
+    def clear_chat(self):
+        """Efface la conversation et reset l'historique."""
+        for w in self.chat_messages.winfo_children():
+            w.destroy()
+        self.chat_history = []
+        self._add_bot_message("Conversation effacée ! 🧹\nPose-moi une nouvelle question.")
+
+    def send_chat_message(self):
+        """Envoie le message de l'utilisateur au chatbot IA."""
+        msg = self.chat_entry.get().strip()
+        if not msg:
+            return
+
+        self.chat_entry.delete(0, tk.END)
+        self._add_user_message(msg)
+
+        # Vérifications
+        if not self.mistral_api_key:
+            self._add_bot_message("⚠️ Clé API Mistral non configurée !\n\nVa dans ⚙️ Paramètres pour ajouter ta clé API.")
+            self.btn_send_chat.configure(state="normal")
+            self.chat_entry.configure(state="normal")
+            self.chat_entry.focus()
+            return
+
+        if not os.path.exists(self.db_path):
+            self._add_bot_message("⚠️ Base de données introuvable !\nVérifie le chemin dans les paramètres.")
+            self.btn_send_chat.configure(state="normal")
+            self.chat_entry.configure(state="normal")
+            self.chat_entry.focus()
+            return
+
+        # Afficher un indicateur de chargement
+        loading_container = ctk.CTkFrame(self.chat_messages, fg_color="transparent")
+        loading_container.pack(fill="x", pady=5, padx=10)
+        loading_bubble = ctk.CTkFrame(loading_container, fg_color=("gray80", "gray20"), corner_radius=15)
+        loading_bubble.pack(side="left")
+        loading_lbl = ctk.CTkLabel(loading_bubble, text="⏳ Réflexion en cours...",
+                                   font=ctk.CTkFont(size=13), text_color="gray")
+        loading_lbl.pack(padx=15, pady=10)
+
+        # Scroll en bas
+        self.chat_messages._parent_canvas.yview_moveto(1.0)
+
+        # Désactiver le bouton pendant le traitement
+        self.btn_send_chat.configure(state="disabled")
+        self.chat_entry.configure(state="disabled")
+
+        # Lancer dans un thread
+        threading.Thread(target=self._process_ai_query, args=(msg, loading_container), daemon=True).start()
+
+    def _get_summary_status_text(self):
+        """Retourne le texte de statut du résumé IA."""
+        summary_path = self._get_summary_path()
+        if summary_path and os.path.exists(summary_path):
+            mod_time = os.path.getmtime(summary_path)
+            date_str = datetime.datetime.fromtimestamp(mod_time).strftime("%d/%m/%Y à %H:%M")
+            return f"✅ Résumé existant (généré le {date_str})"
+        return "Aucun résumé généré pour l'instant."
+
+    def _get_summary_path(self):
+        """Retourne le chemin du fichier résumé (à côté de la DB)."""
+        if self.db_path:
+            return os.path.join(os.path.dirname(self.db_path), "nas_summary.txt")
+        return None
+
+    def _load_nas_summary(self):
+        """Charge le résumé du NAS depuis le fichier."""
+        summary_path = self._get_summary_path()
+        if summary_path and os.path.exists(summary_path):
+            try:
+                with open(summary_path, 'r', encoding='utf-8') as f:
+                    return f.read().strip()
+            except:
+                pass
+        return None
+
+    def start_summary_thread(self):
+        """Lance la génération du résumé dans un thread."""
+        if not self.mistral_api_key:
+            messagebox.showwarning("Résumé IA", "Configure ta clé API Mistral dans ⚙️ Paramètres d'abord.")
+            return
+        if not os.path.exists(self.db_path):
+            messagebox.showwarning("Résumé IA", "Base de données introuvable.")
+            return
+        self.btn_generate_summary.configure(state="disabled", text="🧠 Génération en cours...", fg_color="gray")
+        self.summary_status.configure(text="⏳ Analyse de la DB et appel à Mistral...")
+        threading.Thread(target=self._generate_nas_summary, daemon=True).start()
+
+    def _collect_nas_stats(self):
+        """Collecte les statistiques structurelles de la DB pour le résumé."""
+        stats = {}
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+
+            # Stats globales
+            c.execute("SELECT COUNT(*) FROM files")
+            stats["total"] = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM files WHERE is_dir=1")
+            stats["total_dirs"] = c.fetchone()[0]
+            stats["total_files"] = stats["total"] - stats["total_dirs"]
+
+            # Top 20 extensions
+            c.execute("""
+                SELECT 
+                    LOWER(CASE WHEN INSTR(name, '.') > 0 
+                          THEN '.' || SUBSTR(name, LENGTH(name) - LENGTH(REPLACE(name, '.', '')) + 1 + 1)
+                          ELSE '(sans extension)' END) as ext,
+                    COUNT(*) as cnt
+                FROM files WHERE is_dir=0
+                GROUP BY ext ORDER BY cnt DESC LIMIT 20
+            """)
+            stats["extensions"] = c.fetchall()
+
+            # Top 30 dossiers racines (niveau 1 sous les scan_paths)
+            root_dirs = []
+            for sp in self.scan_paths:
+                sp_norm = sp.replace('\\', '/')
+                c.execute("""
+                    SELECT name, path FROM files 
+                    WHERE is_dir=1 AND path LIKE ? 
+                    AND path NOT LIKE ?
+                    ORDER BY name ASC LIMIT 30
+                """, (f"{sp_norm}/%", f"{sp_norm}/%/%"))
+                root_dirs.extend(c.fetchall())
+                # Aussi essayer avec backslash
+                sp_back = sp.replace('/', '\\')
+                c.execute("""
+                    SELECT name, path FROM files 
+                    WHERE is_dir=1 AND path LIKE ? 
+                    AND path NOT LIKE ?
+                    ORDER BY name ASC LIMIT 30
+                """, (f"{sp_back}\\%", f"{sp_back}\\%\\%"))
+                root_dirs.extend(c.fetchall())
+            stats["root_dirs"] = root_dirs[:30]
+
+            # Top 15 dossiers avec le plus de fichiers directs
+            c.execute("""
+                SELECT 
+                    CASE 
+                        WHEN INSTR(REPLACE(path, '\\', '/'), '/') > 0 
+                        THEN SUBSTR(REPLACE(path, '\\', '/'), 1, LENGTH(REPLACE(path, '\\', '/')) - LENGTH(name) - 1)
+                        ELSE path 
+                    END as parent_dir,
+                    COUNT(*) as cnt
+                FROM files WHERE is_dir=0
+                GROUP BY parent_dir ORDER BY cnt DESC LIMIT 15
+            """)
+            stats["top_folders_by_count"] = c.fetchall()
+
+            conn.close()
+        except Exception as e:
+            stats["error"] = str(e)
+        return stats
+
+    def _call_mistral_api(self, messages):
+        """Appelle l'API Mistral directement via HTTP (sans SDK)."""
+        import httpx
+        response = httpx.post(
+            "https://api.mistral.ai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {self.mistral_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": self.mistral_model,
+                "messages": messages,
+            },
+            timeout=60.0,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data["choices"][0]["message"]["content"]
+
+    def _generate_nas_summary(self):
+        """Génère un résumé IA du NAS via Mistral (1 seul appel API)."""
+        try:
+            # Collecter les stats
+            stats = self._collect_nas_stats()
+            if "error" in stats:
+                self.after(0, lambda: self._on_summary_done(False, f"Erreur DB : {stats['error']}"))
+                return
+
+            # Construire le prompt avec les données
+            data_prompt = f"""Voici les statistiques d'un NAS/stockage réseau. Génère un résumé structuré et concis (10-15 lignes max) décrivant le contenu de ce stockage. Le résumé doit aider un assistant IA à retrouver des fichiers plus tard.
+
+== STATISTIQUES ==
+Total éléments : {stats.get('total', 0):,}
+Dossiers : {stats.get('total_dirs', 0):,}
+Fichiers : {stats.get('total_files', 0):,}
+
+== TOP EXTENSIONS ==
+{chr(10).join(f"  {ext}: {cnt} fichiers" for ext, cnt in stats.get('extensions', []))}
+
+== DOSSIERS RACINES ==
+{chr(10).join(f"  📁 {name} ({path})" for name, path in stats.get('root_dirs', []))}
+
+== DOSSIERS LES PLUS REMPLIS ==
+{chr(10).join(f"  {folder}: {cnt} fichiers" for folder, cnt in stats.get('top_folders_by_count', []))}
+
+Génère un résumé en français, naturel et utile. Mentionne les types de contenu qu'on peut trouver, les dossiers importants, et les types de fichiers dominants."""
+
+            summary = self._call_mistral_api([
+                {"role": "system", "content": "Tu es un assistant qui génère des résumés concis de stockage réseau."},
+                {"role": "user", "content": data_prompt}
+            ]).strip()
+
+            # Sauvegarder le résumé
+            summary_path = self._get_summary_path()
+            if summary_path:
+                with open(summary_path, 'w', encoding='utf-8') as f:
+                    f.write(summary)
+
+            self.after(0, lambda: self._on_summary_done(True, summary))
+
+        except Exception as e:
+            error_msg = str(e)
+            if "401" in error_msg or "Unauthorized" in error_msg:
+                error_msg = "Clé API invalide"
+            self.after(0, lambda: self._on_summary_done(False, error_msg))
+
+    def _on_summary_done(self, success, message):
+        """Callback après la génération du résumé (thread principal)."""
+        self.btn_generate_summary.configure(state="normal", text="\U0001f9e0 Générer le résumé IA du NAS", fg_color="#6c3483")
+        if success:
+            self.summary_status.configure(text=self._get_summary_status_text())
+            messagebox.showinfo("Résumé IA", "Résumé du NAS généré avec succès ! ✅\nIl sera utilisé par le chatbot.")
+        else:
+            self.summary_status.configure(text=f"❌ Erreur : {message}")
+
+    def _get_system_prompt(self):
+        """Construit le system prompt pour Mistral avec le schéma de la DB."""
+        base_prompt = """Tu es un assistant spécialisé dans la recherche de fichiers. Tu aides l'utilisateur à retrouver des fichiers et dossiers dans sa base de données SQLite.
+
+Voici le schéma de la table `files` :
+- id : INTEGER PRIMARY KEY
+- name : TEXT (nom du fichier ou dossier)
+- path : TEXT (chemin complet)
+- is_dir : INTEGER (1 = dossier, 0 = fichier)
+- mod_time : REAL (timestamp de modification Unix)
+- creation_time : REAL (timestamp de création Unix)
+
+Règles STRICTES :
+1. Réponds TOUJOURS avec un bloc JSON valide entre ```json et ``` contenant :
+   - "sql" : la requête SELECT SQLite à exécuter (LIMIT 50 max). N'utilise QUE des SELECT.
+   - "explanation" : une courte explication de ce que tu cherches (en français).
+2. Utilise LIKE pour les recherches de nom (ex: name LIKE '%pdf' pour les PDF).
+3. Pour les dates, utilise les timestamps Unix avec strftime ou des comparaisons numériques.
+4. Pour les extensions, cherche avec name LIKE '%.ext'
+5. Ne fais JAMAIS de DELETE, UPDATE, INSERT, DROP, ou ALTER.
+6. Si la question n'est pas liée aux fichiers, réponds quand même en JSON avec un sql vide et ton explanation.
+
+Exemples :
+Utilisateur: "Trouve les PDF"
+```json
+{"sql": "SELECT name, path, is_dir, mod_time FROM files WHERE name LIKE '%.pdf' AND is_dir = 0 LIMIT 50", "explanation": "Je recherche tous les fichiers PDF."}
+```
+
+Utilisateur: "Montre les gros dossiers qui contiennent projet"
+```json
+{"sql": "SELECT name, path, is_dir, mod_time FROM files WHERE name LIKE '%projet%' AND is_dir = 1 LIMIT 50", "explanation": "Je cherche les dossiers dont le nom contient 'projet'."}
+```"""
+
+        # Injecter le résumé du NAS s'il existe
+        nas_summary = self._load_nas_summary()
+        if nas_summary:
+            base_prompt += f"\n\n== RÉSUMÉ DU CONTENU DU NAS ==\nVoici un résumé du stockage de l'utilisateur. Utilise ces informations pour mieux orienter tes recherches SQL :\n\n{nas_summary}"
+
+        return base_prompt
+
+    def _process_ai_query(self, user_message, loading_widget):
+        """Traite la requête IA dans un thread séparé."""
+        try:
+            # Construire les messages avec historique
+            messages = [{"role": "system", "content": self._get_system_prompt()}]
+            # Ajouter l'historique récent (max 10 échanges pour le contexte)
+            for h in self.chat_history[-10:]:
+                messages.append(h)
+            messages.append({"role": "user", "content": user_message})
+
+            # Appel API Mistral
+            ai_content = self._call_mistral_api(messages)
+
+            # Sauvegarder dans l'historique
+            self.chat_history.append({"role": "user", "content": user_message})
+            self.chat_history.append({"role": "assistant", "content": ai_content})
+
+            # Parser la réponse JSON
+            sql_query = None
+            explanation = ai_content
+            rows = []
+
+            # Extraire le JSON du markdown
+            json_match = re.search(r'```json\s*\n?(.*?)\n?```', ai_content, re.DOTALL)
+            if json_match:
+                try:
+                    parsed = json.loads(json_match.group(1).strip())
+                    sql_query = parsed.get("sql", "").strip()
+                    explanation = parsed.get("explanation", "")
+                except json.JSONDecodeError:
+                    explanation = ai_content
+            else:
+                # Tenter de parser directement comme JSON
+                try:
+                    parsed = json.loads(ai_content.strip())
+                    sql_query = parsed.get("sql", "").strip()
+                    explanation = parsed.get("explanation", ai_content)
+                except json.JSONDecodeError:
+                    explanation = ai_content
+
+            # Exécuter la requête SQL si valide
+            if sql_query and sql_query.upper().startswith("SELECT"):
+                try:
+                    conn = sqlite3.connect(self.db_path)
+                    c = conn.cursor()
+                    c.execute(sql_query)
+                    rows = c.fetchall()
+                    conn.close()
+
+                    if rows:
+                        explanation += f"\n\n📊 {len(rows)} résultat(s) trouvé(s) :"
+                    else:
+                        explanation += "\n\n😕 Aucun résultat trouvé."
+                except Exception as db_err:
+                    explanation += f"\n\n❌ Erreur SQL : {str(db_err)}"
+
+            # Mettre à jour l'UI dans le thread principal
+            self.after(0, lambda: self._display_ai_response(explanation, rows, loading_widget))
+
+        except Exception as e:
+            error_msg = str(e)
+            if "401" in error_msg or "Unauthorized" in error_msg:
+                error_msg = "⚠️ Clé API invalide. Vérifie ta clé dans les paramètres."
+            elif "429" in error_msg:
+                error_msg = "⚠️ Trop de requêtes. Attends un moment et réessaie."
+            else:
+                error_msg = f"❌ Erreur : {error_msg}"
+            self.after(0, lambda: self._display_ai_response(error_msg, [], loading_widget))
+
+    def _display_ai_response(self, text, rows, loading_widget):
+        """Affiche la réponse de l'IA dans le chat (thread principal)."""
+        try:
+            # Supprimer l'indicateur de chargement
+            if loading_widget and loading_widget.winfo_exists():
+                loading_widget.destroy()
+
+            # Afficher la réponse
+            self._add_bot_message(text)
+
+            # Afficher les résultats cliquables
+            if rows:
+                self._add_file_results(rows)
+
+            # Scroll en bas
+            self.after(100, lambda: self.chat_messages._parent_canvas.yview_moveto(1.0))
+        finally:
+            # Toujours réactiver l'input, même en cas d'erreur
+            self.btn_send_chat.configure(state="normal")
+            self.chat_entry.configure(state="normal")
+            self.chat_entry.focus()
+
     # --- SETTINGS VIEW ---
     def init_settings_view(self):
         self.settings_frame.grid_columnconfigure(0, weight=1)
@@ -265,8 +763,31 @@ class BiechyFinder(ctk.CTk):
         self.stats_info = ctk.CTkLabel(self.settings_frame, text="Stats: ...", justify="left")
         self.stats_info.grid(row=2, column=0, padx=5, pady=20, sticky="w")
 
+        # --- Section Mistral AI ---
+        ai_container = ctk.CTkFrame(self.settings_frame)
+        ai_container.grid(row=4, column=0, sticky="ew", pady=(20, 10))
+        ai_container.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(ai_container, text="🤖 Configuration Mistral AI", font=ctk.CTkFont(size=16, weight="bold")).grid(
+            row=0, column=0, columnspan=2, padx=20, pady=(15, 5), sticky="w")
+
+        ctk.CTkLabel(ai_container, text="Clé API :", font=ctk.CTkFont(size=12)).grid(
+            row=1, column=0, padx=20, pady=(10, 0), sticky="w")
+        self.mistral_key_entry = ctk.CTkEntry(ai_container, show="*", placeholder_text="Colle ta clé API Mistral ici...")
+        self.mistral_key_entry.grid(row=2, column=0, columnspan=2, padx=20, pady=(5, 10), sticky="ew")
+        if self.mistral_api_key:
+            self.mistral_key_entry.insert(0, self.mistral_api_key)
+
+        ctk.CTkLabel(ai_container, text="Modèle :", font=ctk.CTkFont(size=12)).grid(
+            row=3, column=0, padx=20, pady=(5, 0), sticky="w")
+        self.mistral_model_menu = ctk.CTkOptionMenu(ai_container,
+                                                     values=["mistral-small-latest", "mistral-large-latest"],
+                                                     width=250)
+        self.mistral_model_menu.grid(row=4, column=0, padx=20, pady=(5, 15), sticky="w")
+        self.mistral_model_menu.set(self.mistral_model)
+
         btn_row = ctk.CTkFrame(self.settings_frame, fg_color="transparent")
-        btn_row.grid(row=3, column=0, sticky="w")
+        btn_row.grid(row=5, column=0, sticky="w", pady=(10, 0))
 
         ctk.CTkButton(btn_row, text="Sauvegarder les paramètres", command=self.apply_settings).pack(side="left", padx=(0, 10))
         ctk.CTkButton(btn_row, text="Vider la Base de Données", fg_color="#922b21", hover_color="#7b241c",
@@ -294,6 +815,8 @@ class BiechyFinder(ctk.CTk):
 
     def apply_settings(self):
         self.db_path = self.db_path_entry.get()
+        self.mistral_api_key = self.mistral_key_entry.get().strip()
+        self.mistral_model = self.mistral_model_menu.get()
         self.save_config()
         self.update_db_indicator()
         self.update_stats()
@@ -510,6 +1033,13 @@ class BiechyFinder(ctk.CTk):
             conn.commit()
             conn.close()
             self.index_status.configure(text=f"Terminé ! {total_added:,} éléments indexés.")
+
+            # Générer le résumé IA automatiquement si clé API configurée
+            if self.mistral_api_key:
+                self.index_status.configure(text=f"Terminé ! {total_added:,} indexés. 🧠 Génération du résumé IA...")
+                self.after(0, lambda: self.summary_status.configure(text="⏳ Génération auto du résumé..."))
+                self._generate_nas_summary()
+
         except Exception as e:
             self.index_status.configure(text=f"Erreur: {str(e)}")
         finally:

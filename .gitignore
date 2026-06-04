@@ -1,0 +1,21 @@
+# Fichier de config (contient la clé API et mots de passe)
+config.json
+
+# Résumé IA du NAS
+nas_summary.txt
+
+# Base de données
+*.db
+
+# Exécutable (trop lourd pour GitHub)
+*.exe
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
