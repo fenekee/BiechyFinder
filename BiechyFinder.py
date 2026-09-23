@@ -31,6 +31,7 @@ class BiechyFinder(ctk.CTk):
         self.ssh_config = config.get("ssh_config", {"enabled": False, "host": "", "user": "", "pwd": "", "port": 22})
         self.mistral_api_key = config.get("mistral_api_key", "")
         self.mistral_model = config.get("mistral_model", "mistral-small-latest")
+        self.nas_drive_letter = config.get("nas_drive_letter", "")
         self.is_indexing = False
         self.chat_history = []  # Historique des messages pour le contexte Mistral
 
@@ -78,23 +79,24 @@ class BiechyFinder(ctk.CTk):
         self.db_status_label = ctk.CTkLabel(self.sidebar, text="DB Connectée", font=ctk.CTkFont(size=11))
         self.db_status_label.grid(row=7, column=0, padx=(40, 20), pady=(0, 20), sticky="w")
 
-        # --- Frames de Contenu ---
+        # --- Frames de Contenu (lazy init) ---
         self.search_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.indexer_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.chat_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.settings_frame = ctk.CTkFrame(self, fg_color="transparent")
 
+        # Seule la vue recherche est initialisée au démarrage
         self.init_search_view()
-        self.init_indexer_view()
-        self.init_chat_view()
-        self.init_settings_view()
+        self._views_initialized = {"search": True, "indexer": False, "chat": False, "settings": False}
 
         # Sélection par défaut
         self.select_frame("search")
-        self.update_stats()
         
-        # Aperçu initial (100 derniers éléments)
-        self.after(500, lambda: self.search(initial=True))
+        # Stats en thread pour ne pas bloquer le démarrage
+        threading.Thread(target=self._update_stats_async, daemon=True).start()
+        
+        # Aperçu initial (30 derniers éléments pour démarrage rapide)
+        self.after(200, lambda: self.search(initial=True))
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -106,18 +108,25 @@ class BiechyFinder(ctk.CTk):
         return {"db_path": DEFAULT_DB, "scan_paths": []}
 
     def save_config(self):
-        config = {
-            "db_path": self.db_path,
-            "scan_paths": self.scan_paths,
-            "ssh_config": {
+        # SSH config : utiliser les widgets si initialisés, sinon les valeurs en mémoire
+        if self._views_initialized.get("indexer"):
+            ssh_cfg = {
                 "enabled": self.var_ssh_enabled.get(),
                 "host": self.ssh_host.get(),
                 "user": self.ssh_user.get(),
                 "pwd": self.ssh_pwd.get(),
                 "port": int(self.ssh_port.get() or 22)
-            },
+            }
+        else:
+            ssh_cfg = self.ssh_config
+
+        config = {
+            "db_path": self.db_path,
+            "scan_paths": self.scan_paths,
+            "ssh_config": ssh_cfg,
             "mistral_api_key": self.mistral_api_key,
-            "mistral_model": self.mistral_model
+            "mistral_model": self.mistral_model,
+            "nas_drive_letter": self.nas_drive_letter
         }
         try:
             with open(CONFIG_FILE, 'w') as f:
@@ -126,6 +135,13 @@ class BiechyFinder(ctk.CTk):
             messagebox.showerror("Erreur", f"Impossible de sauvegarder la config: {e}")
 
     def select_frame(self, name):
+        # Lazy init des vues au premier accès
+        if not self._views_initialized.get(name, True):
+            if name == "indexer": self.init_indexer_view()
+            elif name == "chat": self.init_chat_view()
+            elif name == "settings": self.init_settings_view()
+            self._views_initialized[name] = True
+
         # Reset colors
         self.btn_search.configure(fg_color="transparent")
         self.btn_indexer.configure(fg_color="transparent")
@@ -151,6 +167,12 @@ class BiechyFinder(ctk.CTk):
         elif name == "settings":
             self.settings_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
             self.btn_settings.configure(fg_color=("gray75", "gray25"))
+
+    def _remap_drive_letter(self, path):
+        """Remplace la lettre de lecteur dans un chemin si une lettre NAS est configurée."""
+        if self.nas_drive_letter and path and len(path) >= 2 and path[1] == ':':
+            return self.nas_drive_letter.upper() + path[1:]
+        return path
 
     def update_db_indicator(self):
         exists = os.path.exists(self.db_path) if self.db_path else False
@@ -358,6 +380,7 @@ class BiechyFinder(ctk.CTk):
             row_data = rows[i]
             name = row_data[0]
             path = row_data[1]
+            display_path = self._remap_drive_letter(path)
             is_dir = row_data[2] if len(row_data) > 2 else 0
 
             icon = "📁" if is_dir else "📄"
@@ -369,12 +392,12 @@ class BiechyFinder(ctk.CTk):
             lbl = ctk.CTkLabel(file_row, text=f"{icon} {name}", anchor="w", font=ctk.CTkFont(size=12))
             lbl.pack(side="left", padx=10, pady=4)
 
-            path_lbl = ctk.CTkLabel(file_row, text=path, anchor="w", font=ctk.CTkFont(size=9), text_color="gray")
+            path_lbl = ctk.CTkLabel(file_row, text=display_path, anchor="w", font=ctk.CTkFont(size=9), text_color="gray")
             path_lbl.pack(side="left", padx=10, fill="x", expand=True)
 
-            file_row.bind("<Double-Button-1>", lambda e, p=path: self.open_path(p))
-            lbl.bind("<Double-Button-1>", lambda e, p=path: self.open_path(p))
-            path_lbl.bind("<Double-Button-1>", lambda e, p=path: self.open_path(p))
+            file_row.bind("<Double-Button-1>", lambda e, p=display_path: self.open_path(p))
+            lbl.bind("<Double-Button-1>", lambda e, p=display_path: self.open_path(p))
+            path_lbl.bind("<Double-Button-1>", lambda e, p=display_path: self.open_path(p))
 
         if len(rows) > max_display:
             ctk.CTkLabel(results_frame, text=f"... et {len(rows) - max_display} autres résultats",
@@ -762,6 +785,35 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
 
         self.stats_info = ctk.CTkLabel(self.settings_frame, text="Stats: ...", justify="left")
         self.stats_info.grid(row=2, column=0, padx=5, pady=20, sticky="w")
+        # Charger les stats pré-calculées si disponibles
+        if hasattr(self, '_cached_stats'):
+            self.stats_info.configure(text=self._cached_stats)
+
+        # --- Section Lettre de Lecteur NAS ---
+        drive_container = ctk.CTkFrame(self.settings_frame)
+        drive_container.grid(row=3, column=0, sticky="ew", pady=10)
+        drive_container.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(drive_container, text="💾 Lettre de lecteur NAS", font=ctk.CTkFont(size=16, weight="bold")).grid(
+            row=0, column=0, columnspan=2, padx=20, pady=(15, 5), sticky="w")
+
+        ctk.CTkLabel(drive_container, text="Les chemins en base seront remappés vers cette lettre :",
+                     font=ctk.CTkFont(size=11), text_color="gray").grid(
+            row=1, column=0, columnspan=2, padx=20, pady=(0, 5), sticky="w")
+
+        self.drive_letter_entry = ctk.CTkEntry(drive_container, placeholder_text="Ex: B, Z, D...", width=80)
+        self.drive_letter_entry.grid(row=2, column=0, padx=20, pady=(5, 15), sticky="w")
+        if self.nas_drive_letter:
+            self.drive_letter_entry.insert(0, self.nas_drive_letter)
+
+        # Afficher les lecteurs détectés
+        try:
+            detected = [chr(d) for d in range(65, 91) if os.path.exists(f"{chr(d)}:\\")]
+            drives_text = "Lecteurs détectés : " + ", ".join(f"{d}:" for d in detected)
+        except:
+            drives_text = ""
+        ctk.CTkLabel(drive_container, text=drives_text, font=ctk.CTkFont(size=10), text_color="gray").grid(
+            row=2, column=1, padx=10, pady=(5, 15), sticky="w")
 
         # --- Section Mistral AI ---
         ai_container = ctk.CTkFrame(self.settings_frame)
@@ -817,6 +869,12 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
         self.db_path = self.db_path_entry.get()
         self.mistral_api_key = self.mistral_key_entry.get().strip()
         self.mistral_model = self.mistral_model_menu.get()
+        # Lettre de lecteur NAS : garder uniquement la première lettre
+        raw_letter = self.drive_letter_entry.get().strip().upper()
+        if raw_letter and raw_letter[0].isalpha():
+            self.nas_drive_letter = raw_letter[0]
+        else:
+            self.nas_drive_letter = ""
         self.save_config()
         self.update_db_indicator()
         self.update_stats()
@@ -840,6 +898,8 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
             self.save_config()
 
     def update_stats(self):
+        if not self._views_initialized.get("settings"):
+            return
         if not os.path.exists(self.db_path):
             self.stats_info.configure(text="Base de données non trouvée.")
             return
@@ -855,6 +915,24 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
             conn.close()
         except:
             self.stats_info.configure(text="Erreur lecture DB")
+
+    def _update_stats_async(self):
+        """Version thread-safe de update_stats pour le démarrage."""
+        if not os.path.exists(self.db_path):
+            return
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM files")
+            count = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) FROM files WHERE is_dir=1")
+            dirs = c.fetchone()[0]
+            conn.close()
+            size = os.path.getsize(self.db_path) / (1024 * 1024)
+            # On stocke les résultats pour quand settings sera ouvert
+            self._cached_stats = f"Items: {count:,}\nDossiers: {dirs:,}\nFichiers: {count-dirs:,}\nTaille DB: {size:.1f} MB"
+        except:
+            self._cached_stats = "Erreur lecture DB"
 
     def search(self, initial=False):
         query = self.search_entry.get().strip()
@@ -878,7 +956,7 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
             c = conn.cursor()
             
             if not query:
-                sql = "SELECT name, path, is_dir, mod_time FROM files ORDER BY id DESC LIMIT 100"
+                sql = "SELECT name, path, is_dir, mod_time FROM files ORDER BY id DESC LIMIT 30"
                 params = []
             else:
                 sql = "SELECT name, path, is_dir, mod_time FROM files WHERE name LIKE ?"
@@ -910,6 +988,7 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
 
     def add_row(self, index, data):
         name, path, is_dir, mod_time = data
+        display_path = self._remap_drive_letter(path)
         bg = ("gray90", "gray15") if index % 2 == 0 else ("gray95", "gray18")
         
         row = ctk.CTkFrame(self.results_scroll, fg_color=bg, corner_radius=5)
@@ -919,11 +998,11 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
         lbl = ctk.CTkLabel(row, text=f"{icon} {name}", anchor="w", font=ctk.CTkFont(size=13))
         lbl.pack(side="left", padx=10, pady=5)
 
-        path_lbl = ctk.CTkLabel(row, text=path, anchor="w", font=ctk.CTkFont(size=10), text_color="gray")
+        path_lbl = ctk.CTkLabel(row, text=display_path, anchor="w", font=ctk.CTkFont(size=10), text_color="gray")
         path_lbl.pack(side="left", padx=20, fill="x", expand=True)
 
-        row.bind("<Double-Button-1>", lambda e, p=path: self.open_path(p))
-        lbl.bind("<Double-Button-1>", lambda e, p=path: self.open_path(p))
+        row.bind("<Double-Button-1>", lambda e, p=display_path: self.open_path(p))
+        lbl.bind("<Double-Button-1>", lambda e, p=display_path: self.open_path(p))
 
     def open_path(self, path):
         try:
@@ -946,11 +1025,33 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
         self.btn_start_index.configure(state="disabled", text="INDEXATION EN COURS...", fg_color="gray")
         threading.Thread(target=self.run_indexer, daemon=True).start()
 
+    def _fast_scan(self, base_path):
+        """Scan récursif avec os.scandir() — 2-5× plus rapide que os.walk() sur réseau.
+        Yields des tuples (name, path, is_dir, mod_time, creation_time)."""
+        try:
+            with os.scandir(base_path) as it:
+                for entry in it:
+                    try:
+                        stat = entry.stat(follow_symlinks=False)
+                        is_dir = entry.is_dir(follow_symlinks=False)
+                        yield (entry.name, entry.path, 1 if is_dir else 0, stat.st_mtime, stat.st_ctime)
+                        if is_dir:
+                            yield from self._fast_scan(entry.path)
+                    except (PermissionError, OSError):
+                        continue
+        except (PermissionError, OSError):
+            pass
+
     def run_indexer(self):
         try:
             import paramiko
             conn = sqlite3.connect(self.db_path)
             c = conn.cursor()
+            
+            # Optimisations SQLite pour écriture en masse
+            c.execute("PRAGMA journal_mode=WAL")
+            c.execute("PRAGMA synchronous=NORMAL")
+            c.execute("PRAGMA cache_size=-64000")
             
             c.execute("""CREATE TABLE IF NOT EXISTS files 
                         (id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -988,7 +1089,7 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
                                 batch.append((name, path, 1 if ptype=='d' else 0, float(mtime), float(ctime)))
                             except: continue
                             
-                            if len(batch) >= 1000:
+                            if len(batch) >= 5000:
                                 c.executemany("INSERT INTO files (name, path, is_dir, mod_time, creation_time) VALUES (?,?,?,?,?)", batch)
                                 total_added += len(batch)
                                 batch = []
@@ -1000,27 +1101,17 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
                 
                 ssh.close()
             else:
-                # --- LOCAL/SMB SCAN ---
+                # --- LOCAL/SMB SCAN (optimisé avec scandir) ---
                 for base_path in self.scan_paths:
                     self.index_status.configure(text=f"Scan: {base_path}")
                     self.progress_bar.set(0)
                     
                     batch = []
-                    for root, dirs, files in os.walk(base_path):
+                    for entry_tuple in self._fast_scan(base_path):
                         if not self.is_indexing: break
+                        batch.append(entry_tuple)
                         
-                        # Add current directory
-                        try:
-                            batch.append((os.path.basename(root), root, 1, os.path.getmtime(root), os.path.getctime(root)))
-                        except: pass
-                        
-                        for f in files:
-                            fpath = os.path.join(root, f)
-                            try:
-                                batch.append((f, fpath, 0, os.path.getmtime(fpath), os.path.getctime(fpath)))
-                            except: continue
-                        
-                        if len(batch) > 1000:
+                        if len(batch) >= 5000:
                             c.executemany("INSERT INTO files (name, path, is_dir, mod_time, creation_time) VALUES (?,?,?,?,?)", batch)
                             total_added += len(batch)
                             batch = []
