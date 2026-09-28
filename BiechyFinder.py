@@ -34,6 +34,7 @@ class BiechyFinder(ctk.CTk):
         self.nas_drive_letter = config.get("nas_drive_letter", "")
         self.is_indexing = False
         self.chat_history = []  # Historique des messages pour le contexte Mistral
+        self._views_initialized = {"search": False, "indexer": False, "chat": False, "settings": False}
 
         # Layout principal
         self.grid_columnconfigure(1, weight=1)
@@ -79,24 +80,22 @@ class BiechyFinder(ctk.CTk):
         self.db_status_label = ctk.CTkLabel(self.sidebar, text="DB Connectée", font=ctk.CTkFont(size=11))
         self.db_status_label.grid(row=7, column=0, padx=(40, 20), pady=(0, 20), sticky="w")
 
-        # --- Frames de Contenu (lazy init) ---
-        self.search_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.indexer_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.chat_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.settings_frame = ctk.CTkFrame(self, fg_color="transparent")
+        # --- Frames créées à la demande (pas au démarrage) ---
+        self.search_frame = None
+        self.indexer_frame = None
+        self.chat_frame = None
+        self.settings_frame = None
 
-        # Seule la vue recherche est initialisée au démarrage
-        self.init_search_view()
-        self._views_initialized = {"search": True, "indexer": False, "chat": False, "settings": False}
-
-        # Sélection par défaut
-        self.select_frame("search")
-        
         # Stats en thread pour ne pas bloquer le démarrage
         threading.Thread(target=self._update_stats_async, daemon=True).start()
-        
-        # Aperçu initial (30 derniers éléments pour démarrage rapide)
-        self.after(200, lambda: self.search(initial=True))
+
+        # Démarrage différé : la fenêtre s'affiche d'abord, puis on charge le contenu
+        self.after(1, self._deferred_startup)
+
+    def _deferred_startup(self):
+        """Charge la vue recherche après que la fenêtre est visible."""
+        self.select_frame("search")
+        self.after(50, lambda: self.search(initial=True))
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -135,11 +134,20 @@ class BiechyFinder(ctk.CTk):
             messagebox.showerror("Erreur", f"Impossible de sauvegarder la config: {e}")
 
     def select_frame(self, name):
-        # Lazy init des vues au premier accès
+        # Lazy init : créer le frame + son contenu au premier accès
         if not self._views_initialized.get(name, True):
-            if name == "indexer": self.init_indexer_view()
-            elif name == "chat": self.init_chat_view()
-            elif name == "settings": self.init_settings_view()
+            if name == "search":
+                self.search_frame = ctk.CTkFrame(self, fg_color="transparent")
+                self.init_search_view()
+            elif name == "indexer":
+                self.indexer_frame = ctk.CTkFrame(self, fg_color="transparent")
+                self.init_indexer_view()
+            elif name == "chat":
+                self.chat_frame = ctk.CTkFrame(self, fg_color="transparent")
+                self.init_chat_view()
+            elif name == "settings":
+                self.settings_frame = ctk.CTkFrame(self, fg_color="transparent")
+                self.init_settings_view()
             self._views_initialized[name] = True
 
         # Reset colors
@@ -148,11 +156,11 @@ class BiechyFinder(ctk.CTk):
         self.btn_chat.configure(fg_color="transparent")
         self.btn_settings.configure(fg_color="transparent")
 
-        # Hide all
-        self.search_frame.grid_forget()
-        self.indexer_frame.grid_forget()
-        self.chat_frame.grid_forget()
-        self.settings_frame.grid_forget()
+        # Hide all (seulement les frames qui existent)
+        if self.search_frame: self.search_frame.grid_forget()
+        if self.indexer_frame: self.indexer_frame.grid_forget()
+        if self.chat_frame: self.chat_frame.grid_forget()
+        if self.settings_frame: self.settings_frame.grid_forget()
 
         # Show selected
         if name == "search":
