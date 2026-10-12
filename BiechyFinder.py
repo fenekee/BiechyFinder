@@ -1349,17 +1349,23 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
                     # On crée un .bat qui attend la fermeture de l'app, remplace le fichier, relance et se supprime.
                     self.after(0, lambda: status_lbl.config(text="Préparation du redémarrage..."))
                     bat_path = target_path + "_updater.bat"
+                    target_dir = os.path.dirname(target_path)
                     bat_content = f"""@echo off
-:: Attendre que BiechyFinder se ferme (3 secondes)
+:: Nettoyer les variables temporaires de PyInstaller heritees de l'ancien processus
+set _MEIPASS2=
+set _MEIPASS=
+
+:: Attendre que l'ancien BiechyFinder se ferme completement (3 secondes)
 timeout /t 3 /nobreak >nul
 
 :: Remplacer l'exe
 move /y "{tmp_path}" "{target_path}"
 
-:: Relancer l'application
+:: Se placer dans le bon dossier de travail et relancer l'application proprement
+cd /d "{target_dir}"
 start "" "{target_path}"
 
-:: Supprimer ce script
+:: Supprimer ce script temporaire
 del "%~f0"
 """
                     with open(bat_path, "w", encoding="utf-8") as f:
@@ -1391,9 +1397,15 @@ del "%~f0"
                 f"L'application va se fermer et redémarrer automatiquement.\n"
                 f"(Backup conservé : {os.path.basename(backup_path)})"
             )
+            # Nettoyer l'environnement pour ne pas transmettre _MEIPASS2 au sous-processus
+            clean_env = os.environ.copy()
+            clean_env.pop('_MEIPASS2', None)
+            clean_env.pop('_MEIPASS', None)
+
             # Lancer le bat en arrière-plan puis quitter
             subprocess.Popen(
                 ["cmd", "/c", bat_path],
+                env=clean_env,
                 creationflags=subprocess.CREATE_NO_WINDOW,
                 close_fds=True
             )
