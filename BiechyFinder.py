@@ -15,7 +15,7 @@ import urllib.request
 import urllib.error
 
 # --- Version & Mise à jour ---
-APP_VERSION = "5.0"
+APP_VERSION = "5.1"
 GITHUB_REPO = "fenekee/BiechyFinder"
 
 # Configuration globale
@@ -1350,23 +1350,38 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
                     self.after(0, lambda: status_lbl.config(text="Préparation du redémarrage..."))
                     bat_path = target_path + "_updater.bat"
                     target_dir = os.path.dirname(target_path)
+                    target_name = os.path.basename(target_path)
+                    old_pid = os.getpid()
                     bat_content = f"""@echo off
-:: Nettoyer les variables temporaires de PyInstaller heritees de l'ancien processus
+setlocal
+:: Supprimer toutes les variables PyInstaller heritees
 set _MEIPASS2=
 set _MEIPASS=
 
-:: Attendre que l'ancien BiechyFinder se ferme completement (3 secondes)
-timeout /t 3 /nobreak >nul
+:: Attendre la terminaison effective du processus pere (PID {old_pid})
+:WAIT_LOOP
+tasklist /fi "PID eq {old_pid}" 2>nul | find "{old_pid}" >nul
+if not errorlevel 1 (
+    timeout /t 1 /nobreak >nul
+    goto WAIT_LOOP
+)
+
+:: Petite pause de securite pour liberer le verrou du fichier
+timeout /t 1 /nobreak >nul
 
 :: Remplacer l'exe
-move /y "{tmp_path}" "{target_path}"
+move /y "{tmp_path}" "{target_path}" >nul 2>&1
+if errorlevel 1 (
+    timeout /t 2 /nobreak >nul
+    move /y "{tmp_path}" "{target_path}" >nul 2>&1
+)
 
-:: Se placer dans le bon dossier de travail et relancer l'application proprement
+:: Se deplacer dans le repertoire cible et demarrer l'application
 cd /d "{target_dir}"
-start "" "{target_path}"
+start "" "{target_name}"
 
-:: Supprimer ce script temporaire
-del "%~f0"
+:: Supprimer ce script updater
+del "%~f0" >nul 2>&1
 """
                     with open(bat_path, "w", encoding="utf-8") as f:
                         f.write(bat_content)
