@@ -15,7 +15,7 @@ import urllib.request
 import urllib.error
 
 # --- Version & Mise à jour ---
-APP_VERSION = "5.2"
+APP_VERSION = "5.3"
 GITHUB_REPO = "fenekee/BiechyFinder"
 
 # Configuration globale
@@ -1354,7 +1354,10 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
                     old_pid = os.getpid()
                     bat_content = f"""@echo off
 setlocal
-:: Supprimer toutes les variables PyInstaller heritees
+:: Supprimer toutes les variables d'environnement PyInstaller 6+ et legacy
+set _PYI_APPLICATION_HOME_DIR=
+set _PYI_ARCHIVE_FILE=
+set _PYI_PARENT_PROCESS_LEVEL=
 set _MEIPASS2=
 set _MEIPASS=
 
@@ -1367,16 +1370,17 @@ if not errorlevel 1 (
 )
 
 :: Petite pause de securite pour liberer le verrou du fichier
-timeout /t 1 /nobreak >nul
+timeout /t 2 /nobreak >nul
 
-:: Remplacer l'exe
+:: Remplacer l'exe (avec reessais jusqu'a reussite)
+:MOVE_LOOP
 move /y "{tmp_path}" "{target_path}" >nul 2>&1
 if errorlevel 1 (
-    timeout /t 2 /nobreak >nul
-    move /y "{tmp_path}" "{target_path}" >nul 2>&1
+    timeout /t 1 /nobreak >nul
+    goto MOVE_LOOP
 )
 
-:: Se deplacer dans le repertoire cible et demarrer l'application
+:: Se deplacer dans le repertoire cible et demarrer l'application proprement
 cd /d "{target_dir}"
 start "" "{target_name}"
 
@@ -1412,10 +1416,11 @@ del "%~f0" >nul 2>&1
                 f"L'application va se fermer et redémarrer automatiquement.\n"
                 f"(Backup conservé : {os.path.basename(backup_path)})"
             )
-            # Nettoyer l'environnement pour ne pas transmettre _MEIPASS2 au sous-processus
+            # Nettoyer l'environnement pour ne pas transmettre de variable PyInstaller au sous-processus
             clean_env = os.environ.copy()
-            clean_env.pop('_MEIPASS2', None)
-            clean_env.pop('_MEIPASS', None)
+            for k in list(clean_env.keys()):
+                if k.startswith('_PYI_') or k.startswith('_MEI'):
+                    clean_env.pop(k, None)
 
             # Lancer le bat en arrière-plan puis quitter
             subprocess.Popen(
