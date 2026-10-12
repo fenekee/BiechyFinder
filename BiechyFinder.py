@@ -1266,54 +1266,155 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
             messagebox.showwarning("Mise à jour", f"Impossible de vérifier les mises à jour.\n{error_msg}")
 
     def perform_update(self, latest_tag, asset):
-        """Télécharge le fichier .py depuis la release GitHub et redémarre l'app."""
+        """Télécharge et installe la mise à jour depuis GitHub, puis redémarre."""
         if asset is None:
-            # Pas d'asset — ouvrir la page GitHub dans le navigateur
             import webbrowser
             webbrowser.open(f"https://github.com/{GITHUB_REPO}/releases/latest")
             return
 
         download_url = asset["browser_download_url"]
         asset_name = asset["name"]
-        current_script = os.path.abspath(__file__)
-        backup_path = current_script + ".backup"
 
-        try:
-            self.btn_update.configure(text="⬇ Téléchargement...", state="disabled")
+        # Détecter si on tourne en exe compilé (PyInstaller) ou en .py
+        is_frozen = getattr(sys, 'frozen', False)
+        if is_frozen:
+            current_exe = sys.executable  # ex: C:\...\BiechyFinder.exe
+            target_path = current_exe
+        else:
+            current_exe = os.path.abspath(__file__)
+            target_path = current_exe
 
-            # Télécharger le nouveau fichier
-            tmp_path = current_script + ".tmp"
-            req = urllib.request.Request(download_url, headers={"User-Agent": f"BiechyFinder/{APP_VERSION}"})
-            with urllib.request.urlopen(req, timeout=60) as resp, open(tmp_path, "wb") as out:
-                shutil.copyfileobj(resp, out)
+        tmp_path = target_path + ".tmp"
+        backup_path = target_path + ".backup"
 
-            # Backup de l'ancienne version
-            shutil.copy2(current_script, backup_path)
+        # Popup de progression
+        prog_win = tk.Toplevel(self)
+        prog_win.title("Mise à jour en cours...")
+        prog_win.geometry("420x140")
+        prog_win.resizable(False, False)
+        prog_win.grab_set()
+        prog_win.protocol("WM_DELETE_WINDOW", lambda: None)  # Bloquer fermeture
 
-            # Remplacer le script courant
-            shutil.move(tmp_path, current_script)
+        tk.Label(prog_win, text=f"Téléchargement de BiechyFinder v{latest_tag}...",
+                 font=("Segoe UI", 11)).pack(pady=(20, 10))
 
+        import tkinter.ttk as ttk
+        pb = ttk.Progressbar(prog_win, mode="indeterminate", length=360)
+        pb.pack(padx=30)
+        pb.start(10)
+
+        status_lbl = tk.Label(prog_win, text="Connexion à GitHub...", font=("Segoe UI", 9), fg="gray")
+        status_lbl.pack(pady=8)
+
+        def do_download():
+            try:
+                # --- Téléchargement ---
+                self.after(0, lambda: status_lbl.config(text=f"Téléchargement de {asset_name}..."))
+                req = urllib.request.Request(download_url, headers={"User-Agent": f"BiechyFinder/{APP_VERSION}"})
+
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    total = int(resp.headers.get("Content-Length", 0))
+                    downloaded = 0
+                    with open(tmp_path, "wb") as out:
+                        while True:
+                            chunk = resp.read(65536)
+                            if not chunk:
+                                break
+                            out.write(chunk)
+                            downloaded += len(chunk)
+                            if total > 0:
+                                pct = int(downloaded / total * 100)
+                                self.after(0, lambda p=pct: status_lbl.config(
+                                    text=f"Téléchargement... {p}% ({downloaded//1024//1024:.1f} MB)"))
+
+                # --- Backup ---
+                self.after(0, lambda: status_lbl.config(text="Sauvegarde de l'ancienne version..."))
+                if os.path.exists(backup_path):
+                    os.remove(backup_path)
+                shutil.copy2(target_path, backup_path)
+
+                if is_frozen:
+                    # Pour un .exe : on ne peut pas remplacer un exe en cours d'exécution sur Windows.
+                    # On crée un .bat qui attend la fermeture de l'app, remplace le fichier, relance et se supprime.
+                    self.after(0, lambda: status_lbl.config(text="Préparation du redémarrage..."))
+                    bat_path = target_path + "_updater.bat"
+                    bat_content = f"""@echo off
+:: Attendre que BiechyFinder se ferme (3 secondes)
+timeout /t 3 /nobreak >nul
+
+:: Remplacer l'exe
+move /y "{tmp_path}" "{target_path}"
+
+:: Relancer l'application
+start "" "{target_path}"
+
+:: Supprimer ce script
+del "%~f0"
+"""
+                    with open(bat_path, "w", encoding="utf-8") as f:
+                        f.write(bat_content)
+
+                    self.after(0, lambda: _finalize_exe(bat_path))
+                else:
+                    # Pour un .py : remplacement direct
+                    self.after(0, lambda: status_lbl.config(text="Installation..."))
+                    shutil.move(tmp_path, target_path)
+                    self.after(0, lambda: _finalize_py())
+
+            except Exception as e:
+                # Nettoyage en cas d'erreur
+                for p in [tmp_path]:
+                    try:
+                        if os.path.exists(p):
+                            os.remove(p)
+                    except Exception:
+                        pass
+                err = str(e)
+                self.after(0, lambda: _on_error(err))
+
+        def _finalize_exe(bat_path):
+            prog_win.destroy()
+            messagebox.showinfo(
+                "Mise à jour prête",
+                f"BiechyFinder v{latest_tag} est téléchargé !\n\n"
+                f"L'application va se fermer et redémarrer automatiquement.\n"
+                f"(Backup conservé : {os.path.basename(backup_path)})"
+            )
+            # Lancer le bat en arrière-plan puis quitter
+            subprocess.Popen(
+                ["cmd", "/c", bat_path],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                close_fds=True
+            )
+            self.destroy()
+            sys.exit(0)
+
+        def _finalize_py():
+            prog_win.destroy()
             messagebox.showinfo(
                 "Mise à jour réussie",
                 f"BiechyFinder a été mis à jour vers v{latest_tag} !\n\n"
                 f"L'application va redémarrer.\n"
-                f"(Backup de l'ancienne version : {os.path.basename(backup_path)})"
+                f"(Backup : {os.path.basename(backup_path)})"
             )
-
-            # Redémarrage
             python = sys.executable
             self.destroy()
-            subprocess.Popen([python, current_script])
+            subprocess.Popen([python, target_path])
             sys.exit(0)
 
-        except Exception as e:
-            # Nettoyer si erreur
-            if os.path.exists(tmp_path if 'tmp_path' in dir() else ""):
-                try: os.remove(tmp_path)
-                except: pass
-            messagebox.showerror("Erreur de mise à jour", f"La mise à jour a échoué :\n{str(e)}\n\nL'ancienne version est conservée.")
+        def _on_error(err_msg):
+            try:
+                prog_win.destroy()
+            except Exception:
+                pass
+            messagebox.showerror(
+                "Erreur de mise à jour",
+                f"La mise à jour a échoué :\n{err_msg}\n\nL'ancienne version est conservée."
+            )
             self.btn_update.configure(text=f"⬆ v{latest_tag} dispo !", state="normal")
 
+        # Lancer le téléchargement dans un thread
+        threading.Thread(target=do_download, daemon=True).start()
 
 if __name__ == "__main__":
     app = BiechyFinder()
