@@ -15,7 +15,7 @@ import urllib.request
 import urllib.error
 
 # --- Version & Mise à jour ---
-APP_VERSION = "5.1"
+APP_VERSION = "5.2"
 GITHUB_REPO = "fenekee/BiechyFinder"
 
 # Configuration globale
