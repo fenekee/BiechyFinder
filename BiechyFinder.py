@@ -9,6 +9,14 @@ import json
 import threading
 import time
 import re
+import sys
+import shutil
+import urllib.request
+import urllib.error
+
+# --- Version & Mise à jour ---
+APP_VERSION = "5.0"
+GITHUB_REPO = "fenekee/BiechyFinder"
 
 # Configuration globale
 ctk.set_appearance_mode("Dark")
@@ -21,7 +29,7 @@ class BiechyFinder(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("BiechyFinder v4.0 - NAS Search & Indexer")
+        self.title(f"BiechyFinder v{APP_VERSION} - NAS Search & Indexer")
         self.geometry("1200x850")
 
         # Configuration
@@ -44,6 +52,7 @@ class BiechyFinder(ctk.CTk):
         self.sidebar = ctk.CTkFrame(self, width=200, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         self.sidebar.grid_rowconfigure(6, weight=1)
+        self.sidebar.grid_rowconfigure(8, weight=0)
 
         self.logo = ctk.CTkLabel(self.sidebar, text="BiechyFinder", font=ctk.CTkFont(size=22, weight="bold"))
         self.logo.grid(row=0, column=0, padx=20, pady=(30, 40))
@@ -74,11 +83,24 @@ class BiechyFinder(ctk.CTk):
 
         # Status DB en bas de la sidebar
         self.db_status_indicator = ctk.CTkFrame(self.sidebar, height=10, width=10, corner_radius=5)
-        self.db_status_indicator.grid(row=7, column=0, padx=(20, 0), pady=(0, 20), sticky="w")
+        self.db_status_indicator.grid(row=7, column=0, padx=(20, 0), pady=(0, 5), sticky="w")
         self.update_db_indicator()
 
         self.db_status_label = ctk.CTkLabel(self.sidebar, text="DB Connectée", font=ctk.CTkFont(size=11))
-        self.db_status_label.grid(row=7, column=0, padx=(40, 20), pady=(0, 20), sticky="w")
+        self.db_status_label.grid(row=7, column=0, padx=(40, 20), pady=(0, 5), sticky="w")
+
+        # Bouton mise à jour
+        self.btn_update = ctk.CTkButton(
+            self.sidebar,
+            text=f"v{APP_VERSION} ✓",
+            font=ctk.CTkFont(size=11),
+            fg_color="transparent",
+            text_color="gray",
+            hover_color=("gray70", "gray30"),
+            height=28,
+            command=self.check_for_update
+        )
+        self.btn_update.grid(row=8, column=0, sticky="ew", padx=10, pady=(0, 15))
 
         # --- Frames créées à la demande (pas au démarrage) ---
         self.search_frame = None
@@ -88,6 +110,9 @@ class BiechyFinder(ctk.CTk):
 
         # Stats en thread pour ne pas bloquer le démarrage
         threading.Thread(target=self._update_stats_async, daemon=True).start()
+
+        # Vérification MAJ au démarrage (silencieuse)
+        threading.Thread(target=self._do_check_update, args=(False,), daemon=True).start()
 
         # Démarrage différé : la fenêtre s'affiche d'abord, puis on charge le contenu
         self.after(1, self._deferred_startup)
@@ -775,11 +800,17 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
     # --- SETTINGS VIEW ---
     def init_settings_view(self):
         self.settings_frame.grid_columnconfigure(0, weight=1)
+        self.settings_frame.grid_rowconfigure(0, weight=1)
 
-        title = ctk.CTkLabel(self.settings_frame, text="Paramètres", font=ctk.CTkFont(size=24, weight="bold"))
+        # Scrollable container pour que tous les réglages soient accessibles
+        scroll = ctk.CTkScrollableFrame(self.settings_frame, fg_color="transparent")
+        scroll.grid(row=0, column=0, sticky="nsew")
+        scroll.grid_columnconfigure(0, weight=1)
+
+        title = ctk.CTkLabel(scroll, text="Paramètres", font=ctk.CTkFont(size=24, weight="bold"))
         title.grid(row=0, column=0, sticky="w", pady=(0, 20))
 
-        db_container = ctk.CTkFrame(self.settings_frame)
+        db_container = ctk.CTkFrame(scroll)
         db_container.grid(row=1, column=0, sticky="ew", pady=10)
         db_container.grid_columnconfigure(0, weight=1)
 
@@ -791,14 +822,14 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
 
         ctk.CTkButton(db_container, text="Parcourir...", command=self.browse_db).grid(row=1, column=1, padx=(0, 20), pady=10)
 
-        self.stats_info = ctk.CTkLabel(self.settings_frame, text="Stats: ...", justify="left")
+        self.stats_info = ctk.CTkLabel(scroll, text="Stats: ...", justify="left")
         self.stats_info.grid(row=2, column=0, padx=5, pady=20, sticky="w")
         # Charger les stats pré-calculées si disponibles
         if hasattr(self, '_cached_stats'):
             self.stats_info.configure(text=self._cached_stats)
 
         # --- Section Lettre de Lecteur NAS ---
-        drive_container = ctk.CTkFrame(self.settings_frame)
+        drive_container = ctk.CTkFrame(scroll)
         drive_container.grid(row=3, column=0, sticky="ew", pady=10)
         drive_container.grid_columnconfigure(1, weight=1)
 
@@ -824,7 +855,7 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
             row=2, column=1, padx=10, pady=(5, 15), sticky="w")
 
         # --- Section Mistral AI ---
-        ai_container = ctk.CTkFrame(self.settings_frame)
+        ai_container = ctk.CTkFrame(scroll)
         ai_container.grid(row=4, column=0, sticky="ew", pady=(20, 10))
         ai_container.grid_columnconfigure(0, weight=1)
 
@@ -846,11 +877,11 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
         self.mistral_model_menu.grid(row=4, column=0, padx=20, pady=(5, 15), sticky="w")
         self.mistral_model_menu.set(self.mistral_model)
 
-        btn_row = ctk.CTkFrame(self.settings_frame, fg_color="transparent")
-        btn_row.grid(row=5, column=0, sticky="w", pady=(10, 0))
+        btn_row = ctk.CTkFrame(scroll, fg_color="transparent")
+        btn_row.grid(row=5, column=0, sticky="w", pady=(10, 20))
 
-        ctk.CTkButton(btn_row, text="Sauvegarder les paramètres", command=self.apply_settings).pack(side="left", padx=(0, 10))
-        ctk.CTkButton(btn_row, text="Vider la Base de Données", fg_color="#922b21", hover_color="#7b241c",
+        ctk.CTkButton(btn_row, text="💾 Sauvegarder les paramètres", command=self.apply_settings).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(btn_row, text="🗑️ Vider la Base de Données", fg_color="#922b21", hover_color="#7b241c",
                      command=self.clear_database).pack(side="left")
 
     def clear_database(self):
@@ -1145,6 +1176,135 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
             self.is_indexing = False
             self.btn_start_index.configure(state="normal", text="LANCER L'INDEXATION", fg_color="#1e8449")
             self.update_stats()
+
+    # --- MISE À JOUR ---
+    def check_for_update(self):
+        """Lancé manuellement via le bouton — affiche toujours un retour."""
+        self.btn_update.configure(text="⏳ Vérification...", text_color="gray", state="disabled")
+        threading.Thread(target=self._do_check_update, args=(True,), daemon=True).start()
+
+    def _do_check_update(self, show_feedback):
+        """Interroge l'API GitHub Releases pour comparer les versions."""
+        try:
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+            req = urllib.request.Request(url, headers={"User-Agent": f"BiechyFinder/{APP_VERSION}"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode())
+
+            latest_tag = data.get("tag_name", "").lstrip("v")
+            release_name = data.get("name", latest_tag)
+            assets = data.get("assets", [])
+
+            # Chercher un asset .py ou .exe dans la release
+            py_asset = next((a for a in assets if a["name"].endswith(".py")), None)
+            exe_asset = next((a for a in assets if a["name"].endswith(".exe")), None)
+            download_asset = py_asset or exe_asset
+
+            # Comparer les versions (simple comparaison numérique)
+            try:
+                is_newer = tuple(int(x) for x in latest_tag.split(".")) > tuple(int(x) for x in APP_VERSION.split("."))
+            except ValueError:
+                is_newer = latest_tag != APP_VERSION
+
+            if is_newer:
+                self.after(0, lambda: self._show_update_available(latest_tag, release_name, download_asset))
+            else:
+                self.after(0, lambda: self._show_up_to_date(show_feedback))
+
+        except urllib.error.URLError:
+            self.after(0, lambda: self._show_update_error("Pas de connexion internet", show_feedback))
+        except Exception as e:
+            self.after(0, lambda: self._show_update_error(str(e), show_feedback))
+
+    def _show_update_available(self, latest_tag, release_name, asset):
+        """Affiche le bouton MAJ en vert et propose le téléchargement."""
+        self.btn_update.configure(
+            text=f"⬆ v{latest_tag} dispo !",
+            text_color="#2ecc71",
+            fg_color=("#1a4a2e", "#1a4a2e"),
+            state="normal"
+        )
+        # Popup de notification
+        if messagebox.askyesno(
+            "Mise à jour disponible",
+            f"Une nouvelle version est disponible !\n\n"
+            f"Version actuelle : v{APP_VERSION}\n"
+            f"Nouvelle version : {release_name} (v{latest_tag})\n\n"
+            f"Voulez-vous mettre à jour maintenant ?"
+        ):
+            self.perform_update(latest_tag, asset)
+
+    def _show_up_to_date(self, show_feedback):
+        """Remet le bouton en état neutre (version à jour)."""
+        self.btn_update.configure(
+            text=f"v{APP_VERSION} ✓",
+            text_color="gray",
+            fg_color="transparent",
+            state="normal"
+        )
+        if show_feedback:
+            messagebox.showinfo("Mise à jour", f"BiechyFinder v{APP_VERSION} est déjà à jour ! 🎉")
+
+    def _show_update_error(self, error_msg, show_feedback):
+        """En cas d'erreur réseau, remet le bouton en état normal."""
+        self.btn_update.configure(
+            text=f"v{APP_VERSION} ?",
+            text_color="gray",
+            fg_color="transparent",
+            state="normal"
+        )
+        if show_feedback:
+            messagebox.showwarning("Mise à jour", f"Impossible de vérifier les mises à jour.\n{error_msg}")
+
+    def perform_update(self, latest_tag, asset):
+        """Télécharge le fichier .py depuis la release GitHub et redémarre l'app."""
+        if asset is None:
+            # Pas d'asset — ouvrir la page GitHub dans le navigateur
+            import webbrowser
+            webbrowser.open(f"https://github.com/{GITHUB_REPO}/releases/latest")
+            return
+
+        download_url = asset["browser_download_url"]
+        asset_name = asset["name"]
+        current_script = os.path.abspath(__file__)
+        backup_path = current_script + ".backup"
+
+        try:
+            self.btn_update.configure(text="⬇ Téléchargement...", state="disabled")
+
+            # Télécharger le nouveau fichier
+            tmp_path = current_script + ".tmp"
+            req = urllib.request.Request(download_url, headers={"User-Agent": f"BiechyFinder/{APP_VERSION}"})
+            with urllib.request.urlopen(req, timeout=60) as resp, open(tmp_path, "wb") as out:
+                shutil.copyfileobj(resp, out)
+
+            # Backup de l'ancienne version
+            shutil.copy2(current_script, backup_path)
+
+            # Remplacer le script courant
+            shutil.move(tmp_path, current_script)
+
+            messagebox.showinfo(
+                "Mise à jour réussie",
+                f"BiechyFinder a été mis à jour vers v{latest_tag} !\n\n"
+                f"L'application va redémarrer.\n"
+                f"(Backup de l'ancienne version : {os.path.basename(backup_path)})"
+            )
+
+            # Redémarrage
+            python = sys.executable
+            self.destroy()
+            subprocess.Popen([python, current_script])
+            sys.exit(0)
+
+        except Exception as e:
+            # Nettoyer si erreur
+            if os.path.exists(tmp_path if 'tmp_path' in dir() else ""):
+                try: os.remove(tmp_path)
+                except: pass
+            messagebox.showerror("Erreur de mise à jour", f"La mise à jour a échoué :\n{str(e)}\n\nL'ancienne version est conservée.")
+            self.btn_update.configure(text=f"⬆ v{latest_tag} dispo !", state="normal")
+
 
 if __name__ == "__main__":
     app = BiechyFinder()

@@ -1,4 +1,4 @@
-# 🔍 BiechyFinder v4.0 - NAS Search & Indexer
+# 🔍 BiechyFinder v5.0 - NAS Search & Indexer
 
 Application de recherche et d'indexation de fichiers NAS avec assistant IA intégré (Mistral AI).
 
@@ -8,6 +8,7 @@ Application de recherche et d'indexation de fichiers NAS avec assistant IA inté
 - **Indexeur NAS** — Scanne et indexe tes dossiers réseau (local ou via SSH)
 - **Chat IA** — Décris ce que tu cherches en langage naturel, l'IA génère la requête SQL pour toi
 - **Résumé IA du NAS** — Génère un résumé intelligent du contenu de ton stockage
+- **Mise à jour automatique** — Vérifie et télécharge les nouvelles versions directement depuis GitHub
 
 ## 📥 Installation
 
