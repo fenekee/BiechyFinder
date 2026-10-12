@@ -1209,7 +1209,7 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
             # Chercher un asset .py ou .exe dans la release
             py_asset = next((a for a in assets if a["name"].endswith(".py")), None)
             exe_asset = next((a for a in assets if a["name"].endswith(".exe")), None)
-            download_asset = py_asset or exe_asset
+            download_asset = (exe_asset or py_asset) if getattr(sys, 'frozen', False) else (py_asset or exe_asset)
 
             # Comparer les versions (simple comparaison numérique)
             try:
