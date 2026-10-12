@@ -139,26 +139,50 @@ class ProgressFileReader:
     def __len__(self):
         return self.total
 
-def upload_asset(upload_url, headers, file_path, asset_name):
-    print(f"\nTéléversement de {asset_name} ({os.path.getsize(file_path) / (1024*1024):.1f} Mo)...")
-    reader = ProgressFileReader(file_path, label=asset_name)
-    target_url = f"{upload_url}?name={asset_name}"
-    req = urllib.request.Request(
-        target_url,
-        data=reader,
-        headers={
-            **headers,
-            "Content-Type": "application/octet-stream",
-            "Content-Length": str(os.path.getsize(file_path))
-        }
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=900) as resp:
-            data = json.loads(resp.read().decode())
-            print(f"Succès : {asset_name} téléversé.")
-            return data.get("browser_download_url")
-    finally:
-        reader.f.close()
+import time
+
+def upload_asset(upload_url, headers, file_path, asset_name, max_retries=3):
+    file_size = os.path.getsize(file_path)
+    for attempt in range(1, max_retries + 1):
+        print(f"\nTéléversement de {asset_name} ({file_size / (1024*1024):.1f} Mo) [Essai {attempt}/{max_retries}]...")
+        reader = ProgressFileReader(file_path, label=asset_name)
+        target_url = f"{upload_url}?name={asset_name}"
+        req = urllib.request.Request(
+            target_url,
+            data=reader,
+            headers={
+                **headers,
+                "Content-Type": "application/octet-stream",
+                "Content-Length": str(file_size)
+            }
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=900) as resp:
+                data = json.loads(resp.read().decode())
+                print(f"Succès : {asset_name} téléversé.")
+                return data.get("browser_download_url")
+        except Exception as e:
+            print(f"Échec de l'essai {attempt}: {e}")
+            if attempt < max_retries:
+                try:
+                    m = re.search(r'/releases/(\d+)/', upload_url)
+                    if m:
+                        rel_id = m.group(1)
+                        chk_req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/{rel_id}", headers=headers)
+                        with urllib.request.urlopen(chk_req) as cr:
+                            rel_info = json.loads(cr.read().decode())
+                            for a in rel_info.get("assets", []):
+                                if a.get("name") == asset_name:
+                                    del_req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/assets/{a['id']}", headers=headers, method="DELETE")
+                                    urllib.request.urlopen(del_req)
+                                    print("Nettoyage de l'asset partiel avant nouvel essai.")
+                except Exception:
+                    pass
+                time.sleep(5)
+            else:
+                raise
+        finally:
+            reader.f.close()
 
 def main():
     parser = argparse.ArgumentParser(description="Publier automatiquement une release BiechyFinder.")
@@ -185,7 +209,7 @@ def main():
     exe_path = os.path.join(SCRIPT_DIR, "dist", "BiechyFinder.exe")
     if args.build or not os.path.exists(exe_path):
         print("\nCompilation avec PyInstaller...")
-        res = subprocess.run(["pyinstaller", "--clean", "BiechyFinder.spec"], cwd=SCRIPT_DIR)
+        res = subprocess.run([sys.executable, "-m", "PyInstaller", "--clean", "BiechyFinder.spec"], cwd=SCRIPT_DIR)
         if res.returncode != 0:
             print("Erreur lors de la compilation.")
             sys.exit(1)

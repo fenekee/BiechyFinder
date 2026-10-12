@@ -22,9 +22,10 @@ GITHUB_REPO = "fenekee/BiechyFinder"
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
-CONFIG_FILE = "config.json"
-DEFAULT_DB_DIR = os.path.join(os.path.expanduser("~"), "Documents", "BiechyFinder")
-DEFAULT_DB = os.path.join(DEFAULT_DB_DIR, "biechyfinder.db")
+DEFAULT_APP_DIR = os.path.join(os.path.expanduser("~"), "Documents", "BiechyFinder")
+DEFAULT_DB_DIR = DEFAULT_APP_DIR
+DEFAULT_DB = os.path.join(DEFAULT_APP_DIR, "biechyfinder.db")
+CONFIG_FILE = os.path.join(DEFAULT_APP_DIR, "config.json")
 
 class BiechyFinder(ctk.CTk):
     def __init__(self):
@@ -136,8 +137,105 @@ class BiechyFinder(ctk.CTk):
         """Charge la vue recherche après que la fenêtre est visible."""
         self.select_frame("search")
         self.after(50, lambda: self.search(initial=True))
+        self.after(200, self._check_first_launch_setup)
+
+    def _get_desktop_dir(self):
+        """Retourne le chemin du Bureau (prend en charge OneDrive)."""
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        if not os.path.exists(desktop):
+            onedrive_desktop = os.path.join(os.path.expanduser("~"), "OneDrive", "Desktop")
+            if os.path.exists(onedrive_desktop):
+                return onedrive_desktop
+        return desktop
+
+    def create_desktop_shortcut(self, target_exe=None, working_dir=None):
+        """Crée un raccourci vers BiechyFinder sur le Bureau Windows."""
+        try:
+            if not target_exe:
+                target_exe = os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__)
+            if not working_dir:
+                working_dir = os.path.dirname(target_exe)
+
+            desktop = self._get_desktop_dir()
+            os.makedirs(desktop, exist_ok=True)
+            shortcut_path = os.path.join(desktop, "BiechyFinder.lnk")
+
+            ps_script = f"""
+$ws = New-Object -ComObject WScript.Shell
+$s = $ws.CreateShortcut('{shortcut_path}')
+$s.TargetPath = '{target_exe}'
+$s.WorkingDirectory = '{working_dir}'
+$s.IconLocation = '{target_exe},0'
+$s.Description = 'BiechyFinder - Recherche NAS ultra-rapide'
+$s.Save()
+"""
+            flags = 0x08000000 if sys.platform == 'win32' else 0  # CREATE_NO_WINDOW
+            subprocess.run(["powershell", "-NoProfile", "-Command", ps_script], creationflags=flags, check=True)
+            return True
+        except Exception as e:
+            print(f"Erreur création raccourci bureau: {e}")
+            return False
+
+    def _manual_create_shortcut(self):
+        ok = self.create_desktop_shortcut()
+        if ok:
+            messagebox.showinfo("Raccourci Bureau", "Le raccourci BiechyFinder a été créé sur votre Bureau ! 📌")
+        else:
+            messagebox.showerror("Erreur", "Impossible de créer le raccourci sur le Bureau.")
+
+    def _check_first_launch_setup(self):
+        """Vérifie l'emplacement au premier lancement, propose d'installer dans Documents\\BiechyFinder
+        et de créer le raccourci Bureau."""
+        if getattr(sys, 'frozen', False):
+            current_exe = os.path.abspath(sys.executable)
+            target_dir = DEFAULT_APP_DIR
+            target_exe = os.path.join(target_dir, "BiechyFinder.exe")
+            current_dir = os.path.dirname(current_exe)
+
+            # Si l'application tourne depuis un autre dossier que Documents\BiechyFinder
+            if os.path.normcase(current_dir) != os.path.normcase(target_dir):
+                prompt = (
+                    "Bienvenue dans BiechyFinder ! ✨\n\n"
+                    "Souhaitez-vous installer proprement l'application dans vos Documents :\n"
+                    f"📁 {target_dir}\n\n"
+                    "Et créer un raccourci 📌 sur votre Bureau ?"
+                )
+                if messagebox.askyesno("Installation BiechyFinder", prompt):
+                    try:
+                        os.makedirs(target_dir, exist_ok=True)
+                        if os.path.normcase(current_exe) != os.path.normcase(target_exe):
+                            shutil.copy2(current_exe, target_exe)
+
+                        # Si une base existait à côté de l'exe d'origine, la transférer aussi
+                        src_db = os.path.join(current_dir, "biechyfinder.db")
+                        dest_db = os.path.join(target_dir, "biechyfinder.db")
+                        if os.path.exists(src_db) and not os.path.exists(dest_db):
+                            shutil.copy2(src_db, dest_db)
+
+                        # Créer le raccourci Bureau
+                        self.create_desktop_shortcut(target_exe, target_dir)
+
+                        messagebox.showinfo(
+                            "Installation réussie",
+                            "BiechyFinder est maintenant bien rangé dans vos Documents !\n"
+                            "Un raccourci a été ajouté sur votre Bureau 📌\n\n"
+                            "L'application va s'ouvrir depuis son nouvel emplacement."
+                        )
+                        subprocess.Popen([target_exe], cwd=target_dir)
+                        self.destroy()
+                        sys.exit(0)
+                        return
+                    except Exception as e:
+                        messagebox.showerror("Erreur d'installation", f"Impossible d'effectuer l'installation :\n{e}")
+
+        # S'assurer que le raccourci Bureau existe
+        desktop_shortcut = os.path.join(self._get_desktop_dir(), "BiechyFinder.lnk")
+        if not os.path.exists(desktop_shortcut):
+            self.create_desktop_shortcut()
+
+        # Si aucune base de données n'existe, proposer de la télécharger
         if not os.path.exists(self.db_path):
-            self.after(500, self._prompt_first_time_db_download)
+            self.after(200, self._prompt_first_time_db_download)
 
     def _prompt_first_time_db_download(self):
         if not os.path.exists(self.db_path):
@@ -150,9 +248,18 @@ class BiechyFinder(ctk.CTk):
                 self.download_database_from_github()
 
     def load_config(self):
+        # Migration si un config.json local existait dans le dossier d'exécution
+        local_cfg = "config.json"
+        if not os.path.exists(CONFIG_FILE) and os.path.exists(local_cfg):
+            try:
+                os.makedirs(DEFAULT_APP_DIR, exist_ok=True)
+                shutil.copy2(local_cfg, CONFIG_FILE)
+            except Exception:
+                pass
+
         if os.path.exists(CONFIG_FILE):
             try:
-                with open(CONFIG_FILE, 'r') as f:
+                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                     return json.load(f)
             except:
                 pass
@@ -851,7 +958,7 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
 
         ctk.CTkButton(db_container, text="Parcourir...", command=self.browse_db).grid(row=1, column=1, padx=(0, 20), pady=10)
 
-        # Bouton de téléchargement automatique de la base
+        # Boutons de téléchargement de la base et raccourci bureau
         db_dl_row = ctk.CTkFrame(db_container, fg_color="transparent")
         db_dl_row.grid(row=2, column=0, columnspan=2, padx=20, pady=(0, 15), sticky="w")
 
@@ -862,7 +969,16 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
             hover_color="#163e69",
             command=self.download_database_from_github
         )
-        self.btn_download_db.pack(side="left")
+        self.btn_download_db.pack(side="left", padx=(0, 10))
+
+        self.btn_create_shortcut = ctk.CTkButton(
+            db_dl_row,
+            text="📌 Créer un raccourci Bureau",
+            fg_color="#2e4053",
+            hover_color="#1c2833",
+            command=self._manual_create_shortcut
+        )
+        self.btn_create_shortcut.pack(side="left")
 
         self.stats_info = ctk.CTkLabel(scroll, text="Stats: ...", justify="left")
         self.stats_info.grid(row=2, column=0, padx=5, pady=20, sticky="w")
