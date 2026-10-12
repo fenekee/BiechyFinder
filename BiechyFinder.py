@@ -15,7 +15,7 @@ import urllib.request
 import urllib.error
 
 # --- Version & Mise à jour ---
-APP_VERSION = "5.3"
+APP_VERSION = "5.4"
 GITHUB_REPO = "fenekee/BiechyFinder"
 
 # Configuration globale
@@ -125,6 +125,9 @@ class BiechyFinder(ctk.CTk):
         # Vérification MAJ au démarrage (silencieuse)
         threading.Thread(target=self._do_check_update, args=(False,), daemon=True).start()
 
+        # Initialisation de l'index de recherche FTS5 en tâche de fond
+        threading.Thread(target=self._init_fts_index, daemon=True).start()
+
         # Démarrage différé : la fenêtre s'affiche d'abord, puis on charge le contenu
         self.after(1, self._deferred_startup)
 
@@ -233,7 +236,7 @@ class BiechyFinder(ctk.CTk):
         search_container.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 20))
         search_container.grid_columnconfigure(0, weight=1)
 
-        self.search_entry = ctk.CTkEntry(search_container, placeholder_text="🔍 Nom du fichier, extension, dossier...", 
+        self.search_entry = ctk.CTkEntry(search_container, placeholder_text="🔍 Mots-clés, nom partiel, extension (ex: fact mars 2024, cisco 199)...", 
                                        height=50, font=ctk.CTkFont(size=15), border_width=0)
         self.search_entry.grid(row=0, column=0, padx=20, pady=20, sticky="ew")
         self.search_entry.bind("<Return>", lambda e: self.search())
@@ -984,6 +987,42 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
         except:
             self._cached_stats = "Erreur lecture DB"
 
+    def _init_fts_index(self):
+        """Initialise la table FTS5 pour la recherche plein texte instantanée et tolérante."""
+        if not self.db_path or not os.path.exists(self.db_path):
+            return
+        try:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            c.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
+                    name,
+                    path,
+                    content='files',
+                    content_rowid='id',
+                    tokenize="unicode61 remove_diacritics 2 separators '_-./\\\\'"
+                )
+            """)
+            # Reconstruire si files contient des éléments mais files_fts est vide
+            c.execute("SELECT rowid FROM files_fts LIMIT 1")
+            has_fts = c.fetchone()
+            c.execute("SELECT id FROM files LIMIT 1")
+            has_files = c.fetchone()
+            if has_files and not has_fts:
+                c.execute("INSERT INTO files_fts(files_fts) VALUES('rebuild')")
+                conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    def _prepare_fts_query(self, query):
+        """Transforme une saisie utilisateur en requête FTS5 robuste avec préfixes."""
+        import re
+        clean = re.sub(r'["\'\*\+\(\)\:\^\{\}\[\]~]', ' ', query).strip()
+        words = [re.sub(r'[^a-zA-Z0-9\u00C0-\u017F]', '', w) for w in clean.split()]
+        tokens = [f"{w}*" for w in words if w]
+        return " ".join(tokens)
+
     def search(self, initial=False):
         query = self.search_entry.get().strip()
         if not os.path.exists(self.db_path):
@@ -1007,30 +1046,80 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
             
             if not query:
                 sql = "SELECT name, path, is_dir, mod_time FROM files ORDER BY id DESC LIMIT 30"
-                params = []
+                c.execute(sql)
+                rows = c.fetchall()
             else:
-                sql = "SELECT name, path, is_dir, mod_time FROM files WHERE name LIKE ?"
-                params = [f"%{query}%"]
-                if self.var_dirs.get() and not self.var_files.get(): sql += " AND is_dir = 1"
-                elif self.var_files.get() and not self.var_dirs.get(): sql += " AND is_dir = 0"
-                sql += " ORDER BY is_dir DESC, name ASC LIMIT 200"
-            
-            c.execute(sql, params)
-            rows = c.fetchall()
+                rows = []
+                # 1. Recherche intelligente FTS5 (multi-mots, sans accents, fragments, ranking BM25)
+                fts_q = self._prepare_fts_query(query)
+                if fts_q:
+                    try:
+                        dir_filter = ""
+                        if self.var_dirs.get() and not self.var_files.get():
+                            dir_filter = " AND f.is_dir = 1"
+                        elif self.var_files.get() and not self.var_dirs.get():
+                            dir_filter = " AND f.is_dir = 0"
+
+                        fts_sql = f"""
+                            SELECT f.name, f.path, f.is_dir, f.mod_time
+                            FROM files f
+                            JOIN files_fts ON f.id = files_fts.rowid
+                            WHERE files_fts MATCH ? {dir_filter}
+                            ORDER BY bm25(files_fts, 10.0, 1.0), f.is_dir DESC, f.mod_time DESC
+                            LIMIT 200
+                        """
+                        c.execute(fts_sql, (fts_q,))
+                        rows = c.fetchall()
+                    except Exception:
+                        rows = []
+
+                # 2. Fallback SQL flexible si FTS5 n'a rien retourné ou indisponible
+                if not rows:
+                    import re
+                    words = [w for w in re.split(r'[\s_\-\.]+', query) if w]
+                    if words:
+                        conditions = []
+                        params = []
+                        for w in words:
+                            conditions.append("(name LIKE ? OR path LIKE ?)")
+                            params.extend([f"%{w}%", f"%{w}%"])
+                        where_clause = " AND ".join(conditions)
+                        if self.var_dirs.get() and not self.var_files.get():
+                            where_clause += " AND is_dir = 1"
+                        elif self.var_files.get() and not self.var_dirs.get():
+                            where_clause += " AND is_dir = 0"
+                        fallback_sql = f"""
+                            SELECT name, path, is_dir, mod_time
+                            FROM files
+                            WHERE {where_clause}
+                            ORDER BY is_dir DESC, name ASC
+                            LIMIT 200
+                        """
+                        c.execute(fallback_sql, params)
+                        rows = c.fetchall()
+
             conn.close()
 
             # Retour au thread principal pour mettre à jour l'UI
-            self.after(0, lambda: self._display_results(rows, initial))
+            self.after(0, lambda: self._display_results(rows, initial, query))
         except Exception as e:
             self.after(0, lambda: self.loading_lbl.configure(text=f"Erreur: {str(e)}"))
 
-    def _display_results(self, rows, initial):
+    def _display_results(self, rows, initial, query=""):
         if hasattr(self, 'loading_lbl') and self.loading_lbl.winfo_exists():
             self.loading_lbl.destroy()
 
         if not rows:
-            ctk.CTkLabel(self.results_scroll, text="Aucun résultat", text_color="gray").pack(pady=20)
+            ctk.CTkLabel(self.results_scroll, text="Aucun résultat trouvé", text_color="gray").pack(pady=20)
             return
+
+        # Affichage du compteur de résultats
+        if not initial and query:
+            count_txt = f"{len(rows)} résultat{'s' if len(rows) > 1 else ''}"
+            if len(rows) >= 200:
+                count_txt += " (limité aux 200 premiers)"
+            count_lbl = ctk.CTkLabel(self.results_scroll, text=count_txt, font=ctk.CTkFont(size=11), text_color="#3498db")
+            count_lbl.pack(anchor="w", padx=10, pady=(2, 6))
 
         for i, row in enumerate(rows):
             self.add_row(i, row)
@@ -1170,6 +1259,22 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
                     if batch:
                         c.executemany("INSERT INTO files (name, path, is_dir, mod_time, creation_time) VALUES (?,?,?,?,?)", batch)
                         total_added += len(batch)
+
+            # Mise à jour de l'index de recherche plein texte FTS5
+            try:
+                self.index_status.configure(text="Optimisation de l'index de recherche...")
+                c.execute("""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
+                        name,
+                        path,
+                        content='files',
+                        content_rowid='id',
+                        tokenize="unicode61 remove_diacritics 2 separators '_-./\\\\'"
+                    )
+                """)
+                c.execute("INSERT INTO files_fts(files_fts) VALUES('rebuild')")
+            except Exception:
+                pass
 
             conn.commit()
             conn.close()
