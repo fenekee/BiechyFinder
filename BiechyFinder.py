@@ -32,6 +32,17 @@ class BiechyFinder(ctk.CTk):
         self.title(f"BiechyFinder v{APP_VERSION} - NAS Search & Indexer")
         self.geometry("1200x850")
 
+        # Icône de la fenêtre et de la barre des tâches
+        if getattr(sys, 'frozen', False):
+            _icon_path = os.path.join(sys._MEIPASS, 'icon.ico')
+        else:
+            _icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icon.ico')
+        if os.path.exists(_icon_path):
+            try:
+                self.iconbitmap(_icon_path)
+            except Exception:
+                pass
+
         # Configuration
         config = self.load_config()
         self.db_path = config.get("db_path", DEFAULT_DB)
