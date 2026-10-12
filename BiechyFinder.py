@@ -1211,6 +1211,15 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
             else:
                 self.after(0, lambda: self._show_up_to_date(show_feedback))
 
+        except urllib.error.HTTPError as e:
+            # HTTPError DOIT être catchée AVANT URLError (c'en est une sous-classe)
+            if e.code == 404:
+                # Aucune release publiée sur GitHub — on traite comme "à jour"
+                self.after(0, lambda: self._show_up_to_date(show_feedback))
+            elif e.code == 403:
+                self.after(0, lambda: self._show_update_error("Limite GitHub atteinte, réessaie dans 1 min.", show_feedback))
+            else:
+                self.after(0, lambda: self._show_update_error(f"Erreur GitHub : HTTP {e.code}", show_feedback))
         except urllib.error.URLError:
             self.after(0, lambda: self._show_update_error("Pas de connexion internet", show_feedback))
         except Exception as e:
