@@ -15,7 +15,7 @@ import urllib.request
 import urllib.error
 
 # --- Version & Mise à jour ---
-APP_VERSION = "5.4"
+APP_VERSION = "5.5"
 GITHUB_REPO = "fenekee/BiechyFinder"
 
 # Configuration globale
@@ -23,7 +23,8 @@ ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
 CONFIG_FILE = "config.json"
-DEFAULT_DB = r"C:\Users\fenzseer\Downloads\biechyfinder.db"
+DEFAULT_DB_DIR = os.path.join(os.path.expanduser("~"), "Documents", "BiechyFinder")
+DEFAULT_DB = os.path.join(DEFAULT_DB_DIR, "biechyfinder.db")
 
 class BiechyFinder(ctk.CTk):
     def __init__(self):
@@ -135,6 +136,18 @@ class BiechyFinder(ctk.CTk):
         """Charge la vue recherche après que la fenêtre est visible."""
         self.select_frame("search")
         self.after(50, lambda: self.search(initial=True))
+        if not os.path.exists(self.db_path):
+            self.after(500, self._prompt_first_time_db_download)
+
+    def _prompt_first_time_db_download(self):
+        if not os.path.exists(self.db_path):
+            if messagebox.askyesno(
+                "Base de données manquante",
+                "Aucune base de données n'a été trouvée sur cet ordinateur.\n\n"
+                "Souhaitez-vous télécharger automatiquement la dernière base pré-indexée (~260 Mo) depuis GitHub ?"
+            ):
+                self.select_frame("settings")
+                self.download_database_from_github()
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -225,6 +238,8 @@ class BiechyFinder(ctk.CTk):
         exists = os.path.exists(self.db_path) if self.db_path else False
         color = "green" if exists else "red"
         self.db_status_indicator.configure(fg_color=color)
+        if hasattr(self, 'db_status_label'):
+            self.db_status_label.configure(text="DB Connectée" if exists else "DB Manquante")
 
     # --- SEARCH VIEW ---
     def init_search_view(self):
@@ -836,6 +851,19 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
 
         ctk.CTkButton(db_container, text="Parcourir...", command=self.browse_db).grid(row=1, column=1, padx=(0, 20), pady=10)
 
+        # Bouton de téléchargement automatique de la base
+        db_dl_row = ctk.CTkFrame(db_container, fg_color="transparent")
+        db_dl_row.grid(row=2, column=0, columnspan=2, padx=20, pady=(0, 15), sticky="w")
+
+        self.btn_download_db = ctk.CTkButton(
+            db_dl_row,
+            text="☁️ Télécharger la base depuis GitHub (~260 Mo)",
+            fg_color="#1f538d",
+            hover_color="#163e69",
+            command=self.download_database_from_github
+        )
+        self.btn_download_db.pack(side="left")
+
         self.stats_info = ctk.CTkLabel(scroll, text="Stats: ...", justify="left")
         self.stats_info.grid(row=2, column=0, padx=5, pady=20, sticky="w")
         # Charger les stats pré-calculées si disponibles
@@ -917,6 +945,114 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
         if path:
             self.db_path_entry.delete(0, tk.END)
             self.db_path_entry.insert(0, path)
+
+    def download_database_from_github(self):
+        """Télécharge la dernière base de données biechyfinder.db depuis GitHub Releases."""
+        dest_dir = os.path.dirname(self.db_path) if self.db_path else DEFAULT_DB_DIR
+        if not dest_dir:
+            dest_dir = DEFAULT_DB_DIR
+        os.makedirs(dest_dir, exist_ok=True)
+        dest_path = os.path.join(dest_dir, "biechyfinder.db")
+
+        if not messagebox.askyesno(
+            "Téléchargement de la base",
+            f"Voulez-vous télécharger la base de données pré-indexée (~260 Mo) depuis GitHub ?\n\n"
+            f"Emplacement cible :\n{dest_path}\n\n"
+            f"(Cela remplacera la base locale existante)."
+        ):
+            return
+
+        prog_win = tk.Toplevel(self)
+        prog_win.title("Téléchargement de la base...")
+        prog_win.geometry("450x150")
+        prog_win.resizable(False, False)
+        prog_win.grab_set()
+        prog_win.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        tk.Label(prog_win, text="Téléchargement de biechyfinder.db...", font=("Segoe UI", 11, "bold")).pack(pady=(15, 8))
+
+        import tkinter.ttk as ttk
+        pb = ttk.Progressbar(prog_win, mode="determinate", length=380, maximum=100)
+        pb.pack(padx=25, pady=5)
+
+        status_lbl = tk.Label(prog_win, text="Recherche de la dernière version sur GitHub...", font=("Segoe UI", 9), fg="gray")
+        status_lbl.pack(pady=8)
+
+        def worker():
+            tmp_path = dest_path + ".downloading"
+            try:
+                url = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
+                req = urllib.request.Request(url, headers={"User-Agent": f"BiechyFinder/{APP_VERSION}"})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    releases = json.loads(resp.read().decode())
+
+                download_url = None
+                for r in releases:
+                    for a in r.get("assets", []):
+                        if a.get("name") == "biechyfinder.db":
+                            download_url = a.get("browser_download_url")
+                            break
+                    if download_url:
+                        break
+
+                if not download_url:
+                    download_url = f"https://github.com/{GITHUB_REPO}/releases/latest/download/biechyfinder.db"
+
+                self.after(0, lambda: status_lbl.config(text="Connexion au serveur..."))
+                dl_req = urllib.request.Request(download_url, headers={"User-Agent": f"BiechyFinder/{APP_VERSION}"})
+                with urllib.request.urlopen(dl_req, timeout=300) as resp:
+                    total = int(resp.headers.get("Content-Length", 0))
+                    downloaded = 0
+                    with open(tmp_path, "wb") as f_out:
+                        while True:
+                            chunk = resp.read(1024 * 512)
+                            if not chunk:
+                                break
+                            f_out.write(chunk)
+                            downloaded += len(chunk)
+                            if total > 0:
+                                pct = (downloaded / total) * 100
+                                mb_done = downloaded / (1024 * 1024)
+                                mb_total = total / (1024 * 1024)
+                                self.after(0, lambda p=pct, d=mb_done, t=mb_total: (
+                                    pb.configure(value=p),
+                                    status_lbl.config(text=f"{d:.1f} Mo / {t:.1f} Mo ({int(p)}%)")
+                                ))
+
+                if os.path.exists(dest_path):
+                    try:
+                        os.remove(dest_path)
+                    except Exception:
+                        pass
+                os.replace(tmp_path, dest_path)
+
+                self.db_path = dest_path
+                self.save_config()
+
+                def on_success():
+                    prog_win.destroy()
+                    if hasattr(self, 'db_path_entry'):
+                        self.db_path_entry.delete(0, tk.END)
+                        self.db_path_entry.insert(0, dest_path)
+                    self.update_db_indicator()
+                    self._update_stats_async()
+                    threading.Thread(target=self._init_fts_index, daemon=True).start()
+                    messagebox.showinfo("Succès", "La base de données a été téléchargée et configurée avec succès !\n\nVous pouvez maintenant effectuer vos recherches.")
+
+                self.after(0, on_success)
+
+            except Exception as e:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+                def on_error(err_str=str(e)):
+                    prog_win.destroy()
+                    messagebox.showerror("Erreur de téléchargement", f"Impossible de télécharger la base de données :\n{err_str}")
+                self.after(0, on_error)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def apply_settings(self):
         self.db_path = self.db_path_entry.get()
