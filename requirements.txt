@@ -3,3 +3,4 @@ paramiko
 httpx
 fastapi
 uvicorn[standard]
+pywebview
