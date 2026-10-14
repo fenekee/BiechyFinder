@@ -19,18 +19,32 @@ import urllib.request
 import urllib.error
 
 # Correction PyInstaller Windows GUI (console=False) : sys.stdout et sys.stderr sont None
-class SafeStream(io.StringIO):
+class SafeStream:
     def write(self, s):
         pass
     def flush(self):
         pass
     def isatty(self):
         return False
+    def fileno(self):
+        return -1
+    def readable(self):
+        return False
+    def writable(self):
+        return True
+    def seekable(self):
+        return False
 
-if sys.stdout is None or not hasattr(sys.stdout, 'isatty'):
-    sys.stdout = SafeStream()
-if sys.stderr is None or not hasattr(sys.stderr, 'isatty'):
-    sys.stderr = SafeStream()
+_safe_stream = SafeStream()
+for _attr in ('stdout', 'stderr', 'stdin', '__stdout__', '__stderr__', '__stdin__'):
+    if getattr(sys, _attr, None) is None or not hasattr(getattr(sys, _attr), 'isatty'):
+        setattr(sys, _attr, _safe_stream)
+
+try:
+    import uvicorn.logging
+    uvicorn.logging.ColourizedFormatter.should_use_colors = lambda self: False
+except Exception:
+    pass
 
 APP_VERSION = "6.0"
 GITHUB_REPO = "fenekee/BiechyFinder"
@@ -38,38 +52,50 @@ DEFAULT_APP_DIR = os.path.join(os.path.expanduser("~"), "Documents", "BiechyFind
 DEFAULT_DB = os.path.join(DEFAULT_APP_DIR, "biechyfinder.db")
 CONFIG_FILE = os.path.join(DEFAULT_APP_DIR, "config.json")
 
-# 1. Vérification et installation automatique de WebView2 si manquant sous Windows
+# 1. Vérification rapide et non-bloquante de WebView2 sous Windows
 def ensure_webview2_installed():
     if sys.platform != "win32":
         return
     try:
+        # 1. Vérification rapide dans les dossiers de programmes Edge / WebView2
+        fast_paths = [
+            r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application",
+            r"C:\Program Files\Microsoft\EdgeWebView\Application",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application",
+            r"C:\Program Files\Microsoft\Edge\Application"
+        ]
+        for p in fast_paths:
+            if os.path.exists(p):
+                return
+
         import winreg
-        # Vérification des clés de registre officielles de WebView2 Runtime
         keys = [
             (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-2342-4285-A108-0A0003430441}"),
             (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\EdgeUpdate\Clients\{F3017226-2342-4285-A108-0A0003430441}"),
             (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-2342-4285-A108-0A0003430441}")
         ]
-        installed = False
         for hkey, subkey in keys:
             try:
                 with winreg.OpenKey(hkey, subkey) as k:
                     val, _ = winreg.QueryValueEx(k, "pv")
                     if val and val != "0.0.0.0":
-                        installed = True
-                        break
+                        return
             except OSError:
                 pass
 
-        if not installed:
-            print("Microsoft Edge WebView2 non détecté. Installation automatique en cours...")
-            bootstrapper_url = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
-            tmp_installer = os.path.join(os.environ.get("TEMP", "."), "MicrosoftEdgeWebview2Setup.exe")
-            urllib.request.urlretrieve(bootstrapper_url, tmp_installer)
-            subprocess.run([tmp_installer, "/silent", "/install"], check=True)
-            print("WebView2 installé avec succès !")
-    except Exception as e:
-        print(f"Note WebView2: {e}")
+        # Si vraiment absent, installer en tâche de fond pour ne jamais bloquer le démarrage
+        def _bg_install():
+            try:
+                bootstrapper_url = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+                tmp_installer = os.path.join(os.environ.get("TEMP", "."), "MicrosoftEdgeWebview2Setup.exe")
+                urllib.request.urlretrieve(bootstrapper_url, tmp_installer)
+                subprocess.run([tmp_installer, "/silent", "/install"], check=False)
+            except Exception:
+                pass
+
+        threading.Thread(target=_bg_install, daemon=True).start()
+    except Exception:
+        pass
 
 # 2. Création automatique du raccourci sur le Bureau au premier lancement
 def ensure_desktop_shortcut():
@@ -122,7 +148,6 @@ def ensure_database():
     # Sinon téléchargement automatique depuis GitHub Releases en tâche de fond
     def _download_db():
         try:
-            print("Téléchargement automatique de la base pré-indexée depuis GitHub...")
             url = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
             req = urllib.request.Request(url, headers={"User-Agent": f"BiechyFinder/{APP_VERSION}"})
             with urllib.request.urlopen(req, timeout=15) as resp:
@@ -148,9 +173,8 @@ def ensure_database():
                     f_out.write(chunk)
             if os.path.exists(tmp_path):
                 os.replace(tmp_path, DEFAULT_DB)
-                print("Base de données téléchargée avec succès !")
-        except Exception as e:
-            print(f"Note DB download: {e}")
+        except Exception:
+            pass
 
     threading.Thread(target=_download_db, daemon=True).start()
 
@@ -163,6 +187,12 @@ def start_api_server(port: int):
     try:
         import asyncio
         import uvicorn
+        try:
+            import uvicorn.logging
+            uvicorn.logging.ColourizedFormatter.should_use_colors = lambda self: False
+        except Exception:
+            pass
+
         from server import app as fastapi_app
         
         loop = asyncio.new_event_loop()
@@ -173,7 +203,7 @@ def start_api_server(port: int):
             host="127.0.0.1",
             port=port,
             log_config=None,
-            log_level="error",
+            log_level="critical",
             access_log=False
         )
         server = uvicorn.Server(config)
@@ -187,17 +217,18 @@ def start_api_server(port: int):
         except Exception:
             pass
 
-def wait_for_api(port: int, timeout: float = 12.0):
-    url = f"http://127.0.0.1:{port}/api/status"
+def wait_for_api(port: int, timeout: float = 10.0):
+    """Vérification ultra-rapide par socket TCP pure (< 1ms par essai, sans délai DNS/proxy Windows)"""
     start_time = time.time()
     while time.time() - start_time < timeout:
         try:
-            with urllib.request.urlopen(url, timeout=0.8) as resp:
-                if resp.status == 200:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.05)
+                if s.connect_ex(('127.0.0.1', port)) == 0:
                     return True
         except Exception:
             pass
-        time.sleep(0.15)
+        time.sleep(0.03)
     return False
 
 def main():

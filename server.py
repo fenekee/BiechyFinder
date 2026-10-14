@@ -18,18 +18,32 @@ from typing import Optional, List, Dict, Any
 from pathlib import Path
 
 # Protection PyInstaller GUI (console=False)
-class SafeStream(io.StringIO):
+class SafeStream:
     def write(self, s):
         pass
     def flush(self):
         pass
     def isatty(self):
         return False
+    def fileno(self):
+        return -1
+    def readable(self):
+        return False
+    def writable(self):
+        return True
+    def seekable(self):
+        return False
 
-if sys.stdout is None or not hasattr(sys.stdout, 'isatty'):
-    sys.stdout = SafeStream()
-if sys.stderr is None or not hasattr(sys.stderr, 'isatty'):
-    sys.stderr = SafeStream()
+_safe_stream = SafeStream()
+for _attr in ('stdout', 'stderr', 'stdin', '__stdout__', '__stderr__', '__stdin__'):
+    if getattr(sys, _attr, None) is None or not hasattr(getattr(sys, _attr), 'isatty'):
+        setattr(sys, _attr, _safe_stream)
+
+try:
+    import uvicorn.logging
+    uvicorn.logging.ColourizedFormatter.should_use_colors = lambda self: False
+except Exception:
+    pass
 
 from fastapi import FastAPI, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
@@ -418,26 +432,28 @@ def get_nas_summary_text() -> str:
     return ""
 
 def build_system_prompt() -> str:
-    prompt = """Tu es un assistant IA spécialisé dans la recherche de fichiers sur un NAS réseau.
-Tu aides l'utilisateur à retrouver rapidement ses documents, projets, dossiers et fichiers multimédia.
+    prompt = """Tu es l'assistant IA intelligent de BiechyFinder, expert dans la recherche de fichiers sur le NAS réseau.
 
-Voici le schéma de la table `files` :
+INSTRUCTIONS :
+1. Réponds TOUJOURS en français, de façon claire, polie, naturelle et concise.
+2. Si la demande de l'utilisateur implique de chercher des fichiers ou dossiers dans la base de données SQLite du NAS, inclus dans ta réponse :
+- D'abord ton texte d'explication ou de confirmation en français (ex: "Voici les fichiers de devis récents trouvés sur le NAS :").
+- Puis à la fin, un bloc SQL :
+```sql
+SELECT name, path, is_dir, mod_time FROM files WHERE name LIKE '%mot_cle%' LIMIT 25;
+```
+
+Schéma de la table `files` :
 - id : INTEGER PRIMARY KEY
 - name : TEXT (nom du fichier ou dossier)
 - path : TEXT (chemin complet réseau)
 - is_dir : INTEGER (1 = dossier, 0 = fichier)
 - mod_time : REAL (timestamp de modification Unix)
-- creation_time : REAL (timestamp de création Unix)
 
-RÈGLES IMPORTANTES :
-1. Réponds TOUJOURS avec un bloc ```json ... ``` au début ou dans ta réponse contenant :
-   {
-     "sql": "SELECT name, path, is_dir, mod_time FROM files WHERE ... LIMIT 20",
-     "explanation": "Explication claire et naturelle en français de ce que tu as cherché ou trouvé."
-   }
-2. Utilise LIKE pour la recherche de mots-clés (ex: name LIKE '%facture%' ou path LIKE '%Projets%').
-3. Si la question n'a pas besoin de SQL, mets "sql": "" et donne une réponse utile dans "explanation".
-4. Ne fais QUE des SELECT.
+Règles SQL :
+- Ne fais QUE des SELECT.
+- Tu peux filtrer par extension (`name LIKE '%.pdf'`) ou par type (`is_dir = 1` ou `is_dir = 0`).
+- Si la question n'a pas besoin de SQL (ex: salutation, question générale), réponds simplement et chaleureusement sans bloc SQL.
 """
     summary = get_nas_summary_text()
     if summary:
@@ -487,7 +503,13 @@ async def chat_with_ai(req: ChatRequest):
                 ) as resp:
                     if resp.status_code != 200:
                         err_content = await resp.aread()
-                        yield f"data: {json.dumps({'type': 'error', 'message': f'Erreur API Mistral ({resp.status_code}): {err_content.decode()}'})}\n\n"
+                        err_msg = f"Erreur API Mistral ({resp.status_code})"
+                        try:
+                            err_json = json.loads(err_content.decode())
+                            err_msg = err_json.get("message", err_msg)
+                        except Exception:
+                            pass
+                        yield f"data: {json.dumps({'type': 'error', 'message': err_msg})}\n\n"
                         set_app_state("idle")
                         return
 
@@ -506,15 +528,19 @@ async def chat_with_ai(req: ChatRequest):
                         except Exception:
                             continue
 
-            # 2. Extraire la requête SQL si présente pour fournir les sources du NAS
-            json_match = re.search(r'```json\s*\n?(.*?)\n?```', collected_text, re.DOTALL)
+            # 2. Extraire la requête SQL : supporte bloc ```sql ... ``` OU ```json ... ```
             sql_query = ""
-            if json_match:
-                try:
-                    parsed = json.loads(json_match.group(1).strip())
-                    sql_query = parsed.get("sql", "").strip()
-                except Exception:
-                    pass
+            sql_match = re.search(r'```sql\s*\n?(.*?)\n?```', collected_text, re.DOTALL | re.IGNORECASE)
+            if sql_match:
+                sql_query = sql_match.group(1).strip()
+            else:
+                json_match = re.search(r'```json\s*\n?(.*?)\n?```', collected_text, re.DOTALL | re.IGNORECASE)
+                if json_match:
+                    try:
+                        parsed = json.loads(json_match.group(1).strip())
+                        sql_query = parsed.get("sql", parsed.get("query", "")).strip()
+                    except Exception:
+                        pass
 
             if sql_query and sql_query.upper().startswith("SELECT") and os.path.exists(db_path):
                 try:
@@ -524,7 +550,6 @@ async def chat_with_ai(req: ChatRequest):
                     rows = c.fetchall()
                     conn.close()
                     for r in rows[:30]:
-                        # Handle varied column select formats
                         name = r[0] if len(r) > 0 else ""
                         path = r[1] if len(r) > 1 else ""
                         is_dir = bool(r[2]) if len(r) > 2 else False

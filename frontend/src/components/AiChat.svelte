@@ -107,7 +107,7 @@
           if (!line.startsWith('data: ')) continue;
           const jsonStr = line.replace('data: ', '').trim();
           try {
-            const data = json.parse(jsonStr);
+            const data = JSON.parse(jsonStr);
 
             if (data.type === 'chunk') {
               // Filtrer le bloc ```json ... ``` de la réponse affichée si présent
@@ -152,22 +152,39 @@
   }
 
   // Nettoie l'affichage du message pour masquer le JSON technique brut s'il est au début
-  function cleanMessageContent(raw) {
-    if (!raw) return '';
-    // Si la réponse contient ```json { ... "explanation": "..." } ```
-    // On extrait l'explication pour un affichage plus propre et humain
-    const jsonMatch = raw.match(/```json\s*\n?([\s\S]*?)\n?```/);
+  // Nettoie l'affichage du message pour masquer le SQL et JSON technique brut
+  function cleanMessageContent(raw, sources = []) {
+    if (!raw) {
+      if (sources && sources.length > 0) {
+        return `J'ai trouvé ${sources.length} fichier(s) correspondant à votre recherche sur le NAS :`;
+      }
+      return '';
+    }
+
+    // 1. Masquer les blocs SQL (les fichiers sont affichés dans les cartes dédiées sous la bulle)
+    let text = raw.replace(/```sql[\s\S]*?```/gi, '').trim();
+
+    // 2. Extraire l'explication d'un éventuel bloc JSON
+    const jsonMatch = text.match(/```json[\s\S]*?```/i);
     if (jsonMatch) {
       try {
-        const parsed = JSON.parse(jsonMatch[1].trim());
-        const remaining = raw.replace(jsonMatch[0], '').trim();
-        const expl = parsed.explanation ? `${parsed.explanation}\n\n` : '';
-        return expl + remaining;
+        const parsed = JSON.parse(jsonMatch[0].replace(/```json|```/gi, '').trim());
+        const expl = parsed.explanation || parsed.explication || parsed.message || parsed.reponse || parsed.text || '';
+        text = text.replace(jsonMatch[0], expl).trim();
       } catch {
-        // En cours de streaming ou non valide, on affiche tel quel
+        text = text.replace(jsonMatch[0], '').trim();
       }
     }
-    return raw;
+
+    // 3. Si après filtrage le texte est vide mais qu'on a des fichiers sources
+    if (!text) {
+      if (sources && sources.length > 0) {
+        return `J'ai trouvé ${sources.length} élément(s) correspondant à votre recherche sur le NAS :`;
+      }
+      return raw.trim() || "Voici les éléments trouvés sur votre NAS :";
+    }
+
+    return text;
   }
 
   async function copyPath(path) {
@@ -231,7 +248,7 @@
           <!-- Bulle de message -->
           <div class="glass-panel rounded-2xl p-4 text-sm leading-relaxed shadow-xl {msg.role === 'user' ? 'bg-indigo-600/20 border-indigo-500/30 text-white self-end' : 'bg-zinc-900/70 border-white/10 text-zinc-200'}">
             
-            <p class="whitespace-pre-wrap">{cleanMessageContent(msg.content)}</p>
+            <p class="whitespace-pre-wrap">{cleanMessageContent(msg.content, msg.sources)}</p>
 
             {#if msg.streaming && !msg.content}
               <div class="flex items-center gap-2 text-xs text-violet-300 animate-pulse py-1">
