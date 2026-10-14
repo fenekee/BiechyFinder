@@ -9,6 +9,7 @@ Application Windows native moderne (Svelte + GSAP + FastAPI + pywebview Edge Web
 
 import os
 import sys
+import io
 import time
 import socket
 import json
@@ -16,6 +17,20 @@ import threading
 import subprocess
 import urllib.request
 import urllib.error
+
+# Correction PyInstaller Windows GUI (console=False) : sys.stdout et sys.stderr sont None
+class SafeStream(io.StringIO):
+    def write(self, s):
+        pass
+    def flush(self):
+        pass
+    def isatty(self):
+        return False
+
+if sys.stdout is None or not hasattr(sys.stdout, 'isatty'):
+    sys.stdout = SafeStream()
+if sys.stderr is None or not hasattr(sys.stderr, 'isatty'):
+    sys.stderr = SafeStream()
 
 APP_VERSION = "6.0"
 GITHUB_REPO = "fenekee/BiechyFinder"
@@ -157,6 +172,7 @@ def start_api_server(port: int):
             fastapi_app,
             host="127.0.0.1",
             port=port,
+            log_config=None,
             log_level="error",
             access_log=False
         )

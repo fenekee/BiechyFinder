@@ -7,6 +7,7 @@ sans modifier le code existant de BiechyFinder.
 
 import os
 import sys
+import io
 import json
 import time
 import re
@@ -15,6 +16,20 @@ import threading
 import subprocess
 from typing import Optional, List, Dict, Any
 from pathlib import Path
+
+# Protection PyInstaller GUI (console=False)
+class SafeStream(io.StringIO):
+    def write(self, s):
+        pass
+    def flush(self):
+        pass
+    def isatty(self):
+        return False
+
+if sys.stdout is None or not hasattr(sys.stdout, 'isatty'):
+    sys.stdout = SafeStream()
+if sys.stderr is None or not hasattr(sys.stderr, 'isatty'):
+    sys.stderr = SafeStream()
 
 from fastapi import FastAPI, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
