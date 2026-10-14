@@ -1,3 +1,5 @@
 customtkinter
 paramiko
 httpx
+fastapi
+uvicorn[standard]
