@@ -1,19 +1,143 @@
 #!/usr/bin/env python3
 """
-BiechyFinder Desktop App
-Lance l'application dans une fenêtre Windows native ultra moderne via pywebview (Edge WebView2),
-avec le backend Python FTS5 & IA local, sans nécessiter de navigateur web.
+BiechyFinder Desktop App v6.0
+Application Windows native moderne (Svelte + GSAP + FastAPI + pywebview Edge WebView2)
+- Auto-installation des dépendances système manquantes (WebView2 Evergreen)
+- Auto-téléchargement de la base de données au premier lancement si absente
+- Auto-création du raccourci bureau
 """
 
 import os
 import sys
 import time
 import socket
+import json
 import threading
+import subprocess
 import urllib.request
-import webview
-import uvicorn
-from server import app as fastapi_app
+import urllib.error
+
+APP_VERSION = "6.0"
+GITHUB_REPO = "fenekee/BiechyFinder"
+DEFAULT_APP_DIR = os.path.join(os.path.expanduser("~"), "Documents", "BiechyFinder")
+DEFAULT_DB = os.path.join(DEFAULT_APP_DIR, "biechyfinder.db")
+CONFIG_FILE = os.path.join(DEFAULT_APP_DIR, "config.json")
+
+# 1. Vérification et installation automatique de WebView2 si manquant sous Windows
+def ensure_webview2_installed():
+    if sys.platform != "win32":
+        return
+    try:
+        import winreg
+        # Vérification des clés de registre officielles de WebView2 Runtime
+        keys = [
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-2342-4285-A108-0A0003430441}"),
+            (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\EdgeUpdate\Clients\{F3017226-2342-4285-A108-0A0003430441}"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-2342-4285-A108-0A0003430441}")
+        ]
+        installed = False
+        for hkey, subkey in keys:
+            try:
+                with winreg.OpenKey(hkey, subkey) as k:
+                    val, _ = winreg.QueryValueEx(k, "pv")
+                    if val and val != "0.0.0.0":
+                        installed = True
+                        break
+            except OSError:
+                pass
+
+        if not installed:
+            print("Microsoft Edge WebView2 non détecté. Installation automatique en cours...")
+            bootstrapper_url = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+            tmp_installer = os.path.join(os.environ.get("TEMP", "."), "MicrosoftEdgeWebview2Setup.exe")
+            urllib.request.urlretrieve(bootstrapper_url, tmp_installer)
+            subprocess.run([tmp_installer, "/silent", "/install"], check=True)
+            print("WebView2 installé avec succès !")
+    except Exception as e:
+        print(f"Note WebView2: {e}")
+
+# 2. Création automatique du raccourci sur le Bureau au premier lancement
+def ensure_desktop_shortcut():
+    if sys.platform != "win32":
+        return
+    try:
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        shortcut_path = os.path.join(desktop, "BiechyFinder.lnk")
+        if not os.path.exists(shortcut_path):
+            target_exe = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
+            work_dir = os.path.dirname(target_exe)
+            vbs_script = f'''Set oWS = WScript.CreateObject("WScript.Shell")
+sLinkFile = "{shortcut_path}"
+Set oLink = oWS.CreateShortcut(sLinkFile)
+oLink.TargetPath = "{target_exe}"
+oLink.WorkingDirectory = "{work_dir}"
+oLink.Description = "BiechyFinder v{APP_VERSION} - Explorateur NAS & Assistant IA"
+oLink.Save'''
+            vbs_path = os.path.join(os.environ.get("TEMP", "."), "create_shortcut.vbs")
+            with open(vbs_path, "w", encoding="utf-8") as f:
+                f.write(vbs_script)
+            subprocess.run(["cscript", "//nologo", vbs_path], check=False)
+            try:
+                os.remove(vbs_path)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+# 3. Vérification de la base de données au premier lancement
+def ensure_database():
+    os.makedirs(DEFAULT_APP_DIR, exist_ok=True)
+    if os.path.exists(DEFAULT_DB) and os.path.getsize(DEFAULT_DB) > 1024 * 1024:
+        return
+    
+    # Vérifier si une base locale existe dans le dossier de l'app ou dist
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "biechyfinder.db"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist", "biechyfinder.db")
+    ]
+    for c in candidates:
+        if os.path.exists(c) and os.path.getsize(c) > 1024 * 1024:
+            try:
+                import shutil
+                shutil.copy2(c, DEFAULT_DB)
+                return
+            except Exception:
+                pass
+
+    # Sinon téléchargement automatique depuis GitHub Releases en tâche de fond
+    def _download_db():
+        try:
+            print("Téléchargement automatique de la base pré-indexée depuis GitHub...")
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
+            req = urllib.request.Request(url, headers={"User-Agent": f"BiechyFinder/{APP_VERSION}"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                releases = json.loads(resp.read().decode())
+            download_url = None
+            for r in releases:
+                for a in r.get("assets", []):
+                    if a.get("name") == "biechyfinder.db":
+                        download_url = a.get("browser_download_url")
+                        break
+                if download_url:
+                    break
+            if not download_url:
+                download_url = f"https://github.com/{GITHUB_REPO}/releases/latest/download/biechyfinder.db"
+
+            tmp_path = DEFAULT_DB + ".tmp"
+            dl_req = urllib.request.Request(download_url, headers={"User-Agent": f"BiechyFinder/{APP_VERSION}"})
+            with urllib.request.urlopen(dl_req, timeout=600) as resp, open(tmp_path, "wb") as f_out:
+                while True:
+                    chunk = resp.read(1024 * 512)
+                    if not chunk:
+                        break
+                    f_out.write(chunk)
+            if os.path.exists(tmp_path):
+                os.replace(tmp_path, DEFAULT_DB)
+                print("Base de données téléchargée avec succès !")
+        except Exception as e:
+            print(f"Note DB download: {e}")
+
+    threading.Thread(target=_download_db, daemon=True).start()
 
 def find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -21,7 +145,8 @@ def find_free_port() -> int:
         return s.getsockname()[1]
 
 def start_api_server(port: int):
-    # Démarrage silencieux d'uvicorn dans un thread daemon
+    import uvicorn
+    from server import app as fastapi_app
     config = uvicorn.Config(
         fastapi_app,
         host="127.0.0.1",
@@ -52,30 +177,29 @@ def main():
         except Exception:
             pass
 
+    # 1. Dépendances système & initialisation premier lancement
+    ensure_webview2_installed()
+    ensure_desktop_shortcut()
+    ensure_database()
+
+    # 2. Port API
     port = 8000
-    # Vérifier si le port 8000 est déjà occupé, sinon trouver un port libre
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(('127.0.0.1', 8000))
     except OSError:
         port = find_free_port()
 
-    # Démarrer le serveur API en tâche de fond
+    # 3. Lancer FastAPI en arrière-plan
     api_thread = threading.Thread(target=start_api_server, args=(port,), daemon=True)
     api_thread.start()
-
-    # Attendre que l'API soit prête
     wait_for_api(port)
 
-    # Chemin de l'icône de l'application si présente
-    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
-    if not os.path.exists(icon_path):
-        icon_path = None
-
-    # Création de la fenêtre Desktop native
+    # 4. Ouvrir la fenêtre desktop native
+    import webview
     app_url = f"http://127.0.0.1:{port}"
     window = webview.create_window(
-        title="BiechyFinder - Explorateur NAS & Assistant IA",
+        title=f"BiechyFinder v{APP_VERSION} - Explorateur NAS & Assistant IA",
         url=app_url,
         width=1200,
         height=780,
@@ -85,7 +209,6 @@ def main():
         zoomable=True
     )
 
-    # Lancement du moteur WebView2 natif Windows
     webview.start(debug=False)
 
 if __name__ == "__main__":

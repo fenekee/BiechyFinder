@@ -15,7 +15,7 @@ import urllib.request
 import urllib.error
 
 # --- Version & Mise à jour ---
-APP_VERSION = "5.6"
+APP_VERSION = "6.0"
 GITHUB_REPO = "fenekee/BiechyFinder"
 
 # --- Palette Dark Mode Moderne (Tech, Épurée & Performante) ---

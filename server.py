@@ -22,7 +22,8 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 import httpx
 
-app = FastAPI(title="BiechyFinder API", version="5.6")
+APP_VERSION = "6.0"
+app = FastAPI(title="BiechyFinder API", version=APP_VERSION)
 
 # Enable CORS for local dev servers (Vite: 5173, etc.)
 app.add_middleware(
@@ -580,7 +581,11 @@ def update_configuration(update: ConfigUpdate):
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-frontend_dist = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend", "dist")
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    frontend_dist = os.path.join(sys._MEIPASS, "frontend", "dist")
+else:
+    frontend_dist = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend", "dist")
+
 if os.path.exists(frontend_dist):
     assets_dir = os.path.join(frontend_dist, "assets")
     if os.path.exists(assets_dir):

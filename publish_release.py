@@ -25,15 +25,15 @@ REPO = "fenekee/BiechyFinder"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def get_current_version():
-    py_path = os.path.join(SCRIPT_DIR, "BiechyFinder.py")
-    if not os.path.exists(py_path):
-        raise FileNotFoundError(f"Impossible de trouver {py_path}")
-    with open(py_path, "r", encoding="utf-8") as f:
-        content = f.read()
-    m = re.search(r'APP_VERSION\s*=\s*["\']([^"\']+)["\']', content)
-    if not m:
-        raise ValueError("Impossible d'extraire APP_VERSION de BiechyFinder.py")
-    return m.group(1).strip()
+    for filename in ["app.py", "BiechyFinder.py"]:
+        py_path = os.path.join(SCRIPT_DIR, filename)
+        if os.path.exists(py_path):
+            with open(py_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            m = re.search(r'APP_VERSION\s*=\s*["\']([^"\']+)["\']', content)
+            if m:
+                return m.group(1).strip()
+    raise ValueError("Impossible d'extraire APP_VERSION")
 
 def get_github_token():
     token = os.environ.get("GITHUB_TOKEN")
