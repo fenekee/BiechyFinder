@@ -145,29 +145,43 @@ def find_free_port() -> int:
         return s.getsockname()[1]
 
 def start_api_server(port: int):
-    import uvicorn
-    from server import app as fastapi_app
-    config = uvicorn.Config(
-        fastapi_app,
-        host="127.0.0.1",
-        port=port,
-        log_level="error",
-        access_log=False
-    )
-    server = uvicorn.Server(config)
-    server.run()
+    try:
+        import asyncio
+        import uvicorn
+        from server import app as fastapi_app
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        config = uvicorn.Config(
+            fastapi_app,
+            host="127.0.0.1",
+            port=port,
+            log_level="error",
+            access_log=False
+        )
+        server = uvicorn.Server(config)
+        loop.run_until_complete(server.serve())
+    except Exception as e:
+        import traceback
+        err_log = os.path.join(DEFAULT_APP_DIR, "server_error.log")
+        try:
+            with open(err_log, "w", encoding="utf-8") as f:
+                traceback.print_exc(file=f)
+        except Exception:
+            pass
 
-def wait_for_api(port: int, timeout: float = 6.0):
+def wait_for_api(port: int, timeout: float = 12.0):
     url = f"http://127.0.0.1:{port}/api/status"
     start_time = time.time()
     while time.time() - start_time < timeout:
         try:
-            with urllib.request.urlopen(url, timeout=0.5) as resp:
+            with urllib.request.urlopen(url, timeout=0.8) as resp:
                 if resp.status == 200:
                     return True
         except Exception:
             pass
-        time.sleep(0.1)
+        time.sleep(0.15)
     return False
 
 def main():
@@ -193,7 +207,20 @@ def main():
     # 3. Lancer FastAPI en arrière-plan
     api_thread = threading.Thread(target=start_api_server, args=(port,), daemon=True)
     api_thread.start()
-    wait_for_api(port)
+    ready = wait_for_api(port)
+    if not ready:
+        err_log = os.path.join(DEFAULT_APP_DIR, "server_error.log")
+        err_msg = "Le serveur API local n'a pas pu démarrer dans les délais."
+        if os.path.exists(err_log):
+            try:
+                with open(err_log, "r", encoding="utf-8") as f:
+                    err_msg += f"\n\nDétail de l'erreur:\n{f.read()[:500]}"
+            except Exception:
+                pass
+        if sys.platform == "win32":
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, err_msg, "BiechyFinder - Erreur de démarrage", 0x10)
+        return
 
     # 4. Ouvrir la fenêtre desktop native
     import webview
