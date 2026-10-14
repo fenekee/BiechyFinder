@@ -15,10 +15,23 @@ import urllib.request
 import urllib.error
 
 # --- Version & Mise à jour ---
-APP_VERSION = "5.5"
+APP_VERSION = "5.6"
 GITHUB_REPO = "fenekee/BiechyFinder"
 
-# Configuration globale
+# --- Palette Dark Mode Moderne (Tech, Épurée & Performante) ---
+THEME_BG = "#0b0f19"              # Fond principal très sombre et moderne
+THEME_SIDEBAR = "#10141f"         # Sidebar contrastée
+THEME_CARD = "#151b2b"            # Fond des cartes / conteneurs
+THEME_CARD_HOVER = "#1c2438"      # Hover fluide des cartes
+THEME_CARD_BORDER = "#1f273d"     # Bordure très fine et discrète
+THEME_ACCENT = "#2563eb"          # Bleu électrique moderne
+THEME_ACCENT_HOVER = "#1d4ed8"    # Hover bouton accent
+THEME_ACCENT_LIGHT = "#3b82f6"    # Bleu clair pour badges et accents vifs
+THEME_TEXT_PRIMARY = "#f8fafc"    # Texte blanc lumineux
+THEME_TEXT_MUTED = "#94a3b8"      # Texte secondaire gris clair
+THEME_TEXT_DIM = "#64748b"        # Texte discret / raccourcis
+
+# Configuration globale CustomTkinter
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
@@ -31,8 +44,17 @@ class BiechyFinder(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title(f"BiechyFinder v{APP_VERSION} - NAS Search & Indexer")
-        self.geometry("1200x850")
+        self.title(f"BiechyFinder v{APP_VERSION} - NAS Fast Search")
+        
+        # --- Géométrie adaptative pour écrans de PC portable & moniteurs ---
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        default_w = min(1180, max(880, int(screen_w * 0.88)))
+        default_h = min(780, max(560, int(screen_h * 0.84)))
+        pos_x = max(10, (screen_w - default_w) // 2)
+        pos_y = max(10, (screen_h - default_h) // 2 - 20)
+        self.geometry(f"{default_w}x{default_h}+{pos_x}+{pos_y}")
+        self.minsize(820, 520)
 
         # Icône de la fenêtre et de la barre des tâches
         if getattr(sys, 'frozen', False):
@@ -57,69 +79,94 @@ class BiechyFinder(ctk.CTk):
         self.chat_history = []  # Historique des messages pour le contexte Mistral
         self._views_initialized = {"search": False, "indexer": False, "chat": False, "settings": False}
 
+        # Structures pour navigation tactile & clavier (laptop)
+        self._result_rows_widgets = []
+        self._selected_row_index = -1
+        self._active_frame_name = "search"
+
         # Layout principal
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        # --- Barre Latérale (Navigation) ---
-        self.sidebar = ctk.CTkFrame(self, width=200, corner_radius=0)
+        # --- Barre Latérale (Navigation Moderne Dark Tech) ---
+        self.sidebar = ctk.CTkFrame(self, width=220, corner_radius=0, fg_color=THEME_SIDEBAR)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         self.sidebar.grid_rowconfigure(6, weight=1)
         self.sidebar.grid_rowconfigure(8, weight=0)
 
-        self.logo = ctk.CTkLabel(self.sidebar, text="BiechyFinder", font=ctk.CTkFont(size=22, weight="bold"))
-        self.logo.grid(row=0, column=0, padx=20, pady=(30, 40))
+        # Logo épuré avec badge de version
+        logo_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        logo_frame.grid(row=0, column=0, padx=16, pady=(24, 28), sticky="w")
+        
+        logo_title_row = ctk.CTkFrame(logo_frame, fg_color="transparent")
+        logo_title_row.pack(anchor="w")
+        ctk.CTkLabel(logo_title_row, text="⚡ BiechyFinder", font=ctk.CTkFont(size=20, weight="bold"), text_color=THEME_TEXT_PRIMARY).pack(side="left")
+        
+        # Badge de version compact
+        version_badge = ctk.CTkFrame(logo_frame, fg_color="#1e293b", corner_radius=6)
+        version_badge.pack(anchor="w", pady=(4, 0))
+        ctk.CTkLabel(version_badge, text=f" v{APP_VERSION} • FTS5 Search ", font=ctk.CTkFont(size=10, weight="bold"), text_color="#38bdf8").pack(padx=4, pady=1)
 
-        self.btn_search = ctk.CTkButton(self.sidebar, text="🔍 Recherche", font=ctk.CTkFont(size=14), 
-                                       fg_color="transparent", text_color=("gray10", "gray90"), 
-                                       hover_color=("gray70", "gray30"), anchor="w", height=40,
-                                       command=lambda: self.select_frame("search"))
-        self.btn_search.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
+        # Boutons de navigation (style pill moderne avec indicateur actif)
+        self.nav_buttons = {}
 
-        self.btn_indexer = ctk.CTkButton(self.sidebar, text="⚡ Indexeur", font=ctk.CTkFont(size=14),
-                                        fg_color="transparent", text_color=("gray10", "gray90"),
-                                        hover_color=("gray70", "gray30"), anchor="w", height=40,
-                                        command=lambda: self.select_frame("indexer"))
-        self.btn_indexer.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
-
-        self.btn_chat = ctk.CTkButton(self.sidebar, text="🤖 Chat IA", font=ctk.CTkFont(size=14),
-                                       fg_color="transparent", text_color=("gray10", "gray90"),
-                                       hover_color=("gray70", "gray30"), anchor="w", height=40,
-                                       command=lambda: self.select_frame("chat"))
-        self.btn_chat.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
-
-        self.btn_settings = ctk.CTkButton(self.sidebar, text="⚙️ Paramètres", font=ctk.CTkFont(size=14),
-                                         fg_color="transparent", text_color=("gray10", "gray90"),
-                                         hover_color=("gray70", "gray30"), anchor="w", height=40,
-                                         command=lambda: self.select_frame("settings"))
-        self.btn_settings.grid(row=4, column=0, sticky="ew", padx=10, pady=5)
+        self.btn_search = self._create_nav_button("🔍  Recherche", "search", 1)
+        self.btn_indexer = self._create_nav_button("⚡  Indexeur", "indexer", 2)
+        self.btn_chat = self._create_nav_button("🤖  Assistant IA", "chat", 3)
+        self.btn_settings = self._create_nav_button("⚙️  Paramètres", "settings", 4)
 
         # Status DB en bas de la sidebar
-        self.db_status_indicator = ctk.CTkFrame(self.sidebar, height=10, width=10, corner_radius=5)
-        self.db_status_indicator.grid(row=7, column=0, padx=(20, 0), pady=(0, 5), sticky="w")
+        db_status_card = ctk.CTkFrame(self.sidebar, fg_color="#151b2b", corner_radius=8, border_width=1, border_color=THEME_CARD_BORDER)
+        db_status_card.grid(row=7, column=0, padx=12, pady=(0, 8), sticky="ew")
+
+        status_inner = ctk.CTkFrame(db_status_card, fg_color="transparent")
+        status_inner.pack(padx=10, pady=8, fill="x")
+
+        self.db_status_indicator = ctk.CTkFrame(status_inner, height=8, width=8, corner_radius=4)
+        self.db_status_indicator.pack(side="left", padx=(0, 8))
+
+        self.db_status_label = ctk.CTkLabel(status_inner, text="DB Connectée", font=ctk.CTkFont(size=11, weight="bold"), text_color=THEME_TEXT_MUTED)
+        self.db_status_label.pack(side="left", anchor="w")
+
+        self.db_status_sub = ctk.CTkLabel(db_status_card, text="", font=ctk.CTkFont(size=10), text_color=THEME_TEXT_DIM)
+        self.db_status_sub.pack(padx=10, pady=(0, 6), anchor="w")
         self.update_db_indicator()
 
-        self.db_status_label = ctk.CTkLabel(self.sidebar, text="DB Connectée", font=ctk.CTkFont(size=11))
-        self.db_status_label.grid(row=7, column=0, padx=(40, 20), pady=(0, 5), sticky="w")
-
-        # Bouton mise à jour
+        # Bouton mise à jour moderne
         self.btn_update = ctk.CTkButton(
             self.sidebar,
-            text=f"v{APP_VERSION} ✓",
-            font=ctk.CTkFont(size=11),
-            fg_color="transparent",
-            text_color="gray",
-            hover_color=("gray70", "gray30"),
-            height=28,
+            text=f"v{APP_VERSION}  ✓",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#171e2e",
+            text_color="#94a3b8",
+            hover_color="#1f293d",
+            corner_radius=8,
+            height=30,
             command=self.check_for_update
         )
-        self.btn_update.grid(row=8, column=0, sticky="ew", padx=10, pady=(0, 15))
+        self.btn_update.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 16))
 
-        # --- Frames créées à la demande (pas au démarrage) ---
+        # --- Frames créées à la demande (Lazy initialization) ---
         self.search_frame = None
         self.indexer_frame = None
         self.chat_frame = None
         self.settings_frame = None
+        self.results_scroll = None
+        self.settings_scroll = None
+
+        # Gestionnaire universel de défilement Pavé Tactile (Touchpad / Trackpad) & Souris
+        self.bind_all("<MouseWheel>", self._on_universal_mousewheel, add="+")
+        # Support Linux touchpad / scroll
+        self.bind_all("<Button-4>", lambda e: self._on_universal_mousewheel_step(e, -1), add="+")
+        self.bind_all("<Button-5>", lambda e: self._on_universal_mousewheel_step(e, 1), add="+")
+
+        # Raccourcis clavier laptop (navigation rapide sans souris)
+        self.bind_all("<Down>", self._on_key_nav, add="+")
+        self.bind_all("<Up>", self._on_key_nav, add="+")
+        self.bind_all("<Next>", self._on_key_nav, add="+")
+        self.bind_all("<Prior>", self._on_key_nav, add="+")
+        self.bind_all("<Control-f>", lambda e: self._focus_search_entry(), add="+")
+        self.bind_all("<Control-F>", lambda e: self._focus_search_entry(), add="+")
 
         # Stats en thread pour ne pas bloquer le démarrage
         threading.Thread(target=self._update_stats_async, daemon=True).start()
@@ -292,7 +339,26 @@ $s.Save()
         except Exception as e:
             messagebox.showerror("Erreur", f"Impossible de sauvegarder la config: {e}")
 
+    def _create_nav_button(self, text, name, row_idx):
+        btn = ctk.CTkButton(
+            self.sidebar,
+            text=text,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="transparent",
+            text_color=THEME_TEXT_MUTED,
+            hover_color=THEME_CARD_HOVER,
+            anchor="w",
+            corner_radius=8,
+            height=42,
+            command=lambda: self.select_frame(name)
+        )
+        btn.grid(row=row_idx, column=0, sticky="ew", padx=12, pady=3)
+        self.nav_buttons[name] = btn
+        return btn
+
     def select_frame(self, name):
+        self._active_frame_name = name
+
         # Lazy init : créer le frame + son contenu au premier accès
         if not self._views_initialized.get(name, True):
             if name == "search":
@@ -309,31 +375,204 @@ $s.Save()
                 self.init_settings_view()
             self._views_initialized[name] = True
 
-        # Reset colors
-        self.btn_search.configure(fg_color="transparent")
-        self.btn_indexer.configure(fg_color="transparent")
-        self.btn_chat.configure(fg_color="transparent")
-        self.btn_settings.configure(fg_color="transparent")
+        # Mise à jour moderne des styles de navigation
+        for btn_name, btn in self.nav_buttons.items():
+            if btn_name == name:
+                btn.configure(fg_color=THEME_ACCENT, text_color="#ffffff", hover_color=THEME_ACCENT_HOVER)
+            else:
+                btn.configure(fg_color="transparent", text_color=THEME_TEXT_MUTED, hover_color=THEME_CARD_HOVER)
 
-        # Hide all (seulement les frames qui existent)
+        # Masquer les autres vues
         if self.search_frame: self.search_frame.grid_forget()
         if self.indexer_frame: self.indexer_frame.grid_forget()
         if self.chat_frame: self.chat_frame.grid_forget()
         if self.settings_frame: self.settings_frame.grid_forget()
 
-        # Show selected
+        # Afficher la vue sélectionnée avec padding fluide
         if name == "search":
-            self.search_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
-            self.btn_search.configure(fg_color=("gray75", "gray25"))
+            self.search_frame.grid(row=0, column=1, sticky="nsew", padx=24, pady=20)
+            if hasattr(self, 'search_entry'):
+                self.after(50, lambda: self.search_entry.focus_set())
         elif name == "indexer":
-            self.indexer_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
-            self.btn_indexer.configure(fg_color=("gray75", "gray25"))
+            self.indexer_frame.grid(row=0, column=1, sticky="nsew", padx=24, pady=20)
         elif name == "chat":
-            self.chat_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
-            self.btn_chat.configure(fg_color=("gray75", "gray25"))
+            self.chat_frame.grid(row=0, column=1, sticky="nsew", padx=24, pady=20)
         elif name == "settings":
-            self.settings_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
-            self.btn_settings.configure(fg_color=("gray75", "gray25"))
+            self.settings_frame.grid(row=0, column=1, sticky="nsew", padx=24, pady=20)
+
+    # --- Gestionnaire Universel Pavé Tactile (Touchpad / Trackpad) ---
+    def _on_universal_mousewheel(self, event):
+        """Gestionnaire de défilement fluide universel spécialement adapté aux
+        pavés tactiles (Precision Touchpad Windows) et molettes de souris."""
+        try:
+            target = self.winfo_containing(event.x_root, event.y_root)
+            canvas = None
+            curr = target
+            while curr is not None:
+                if isinstance(curr, tk.Canvas):
+                    canvas = curr
+                    break
+                if hasattr(curr, '_parent_canvas'):
+                    canvas = curr._parent_canvas
+                    break
+                curr = getattr(curr, 'master', None)
+
+            # Fallback vers le conteneur scrollable actif de la vue courante
+            if canvas is None:
+                if self._active_frame_name == "search" and self.results_scroll:
+                    canvas = self.results_scroll._parent_canvas
+                elif self._active_frame_name == "settings" and getattr(self, 'settings_scroll', None):
+                    canvas = self.settings_scroll._parent_canvas
+                elif self._active_frame_name == "chat" and getattr(self, 'chat_messages', None):
+                    canvas = self.chat_messages._parent_canvas
+
+            if canvas:
+                delta = event.delta
+                # Résolution du problème Windows Touchpad :
+                # Les trackpads envoient de petits deltas (ex: 15-40). Un int(delta/120) renvoyait 0 !
+                if abs(delta) < 120:
+                    step = -1 if delta > 0 else 1
+                else:
+                    step = -int(delta / 35)
+
+                canvas.yview_scroll(step, "units")
+                return "break"
+        except Exception:
+            pass
+
+    def _on_universal_mousewheel_step(self, event, step):
+        try:
+            target = self.winfo_containing(event.x_root, event.y_root)
+            canvas = None
+            curr = target
+            while curr is not None:
+                if isinstance(curr, tk.Canvas):
+                    canvas = curr; break
+                if hasattr(curr, '_parent_canvas'):
+                    canvas = curr._parent_canvas; break
+                curr = getattr(curr, 'master', None)
+            if canvas is None and self._active_frame_name == "search" and self.results_scroll:
+                canvas = self.results_scroll._parent_canvas
+            if canvas:
+                canvas.yview_scroll(step * 2, "units")
+                return "break"
+        except Exception:
+            pass
+
+    # --- Navigation au Clavier pour PC Portable (Sans Souris) ---
+    def _focus_search_entry(self):
+        if self._active_frame_name != "search":
+            self.select_frame("search")
+        if hasattr(self, 'search_entry'):
+            self.search_entry.focus_set()
+            self.search_entry.select_range(0, tk.END)
+
+    def _on_key_nav(self, event):
+        """Permet de faire défiler et sélectionner les résultats au clavier."""
+        if self._active_frame_name != "search" or not self._result_rows_widgets:
+            return
+
+        key = event.keysym
+        total = len(self._result_rows_widgets)
+
+        if key == "Down":
+            self._selected_row_index = min(total - 1, self._selected_row_index + 1)
+            self._highlight_selected_row()
+            return "break"
+        elif key == "Up":
+            self._selected_row_index = max(0, self._selected_row_index - 1)
+            self._highlight_selected_row()
+            return "break"
+        elif key in ("Next", "Page_Down"):
+            if self.results_scroll:
+                self.results_scroll._parent_canvas.yview_scroll(6, "units")
+                return "break"
+        elif key in ("Prior", "Page_Up"):
+            if self.results_scroll:
+                self.results_scroll._parent_canvas.yview_scroll(-6, "units")
+                return "break"
+
+    def _highlight_selected_row(self):
+        """Surligne le résultat actif et fait défiler la vue pour le garder sous les yeux."""
+        if not self._result_rows_widgets:
+            return
+        for i, item in enumerate(self._result_rows_widgets):
+            frame = item["frame"]
+            if i == self._selected_row_index:
+                frame.configure(fg_color="#1e3a8a", border_color="#3b82f6")  # Highlight bleu moderne
+                # Auto-scroll vers cet élément
+                try:
+                    c = self.results_scroll._parent_canvas
+                    c_h = c.winfo_height()
+                    if c_h > 0:
+                        y = frame.winfo_y()
+                        total_h = self.results_scroll.winfo_height()
+                        if total_h > 0:
+                            c.yview_moveto(max(0.0, min(1.0, (y - 50) / total_h)))
+                except Exception:
+                    pass
+            else:
+                orig_bg = item["orig_bg"]
+                frame.configure(fg_color=orig_bg, border_color=THEME_CARD_BORDER)
+
+    def _show_toast(self, message):
+        """Affiche une notification toast discrète et moderne en bas à droite (non bloquante)."""
+        try:
+            toast = ctk.CTkFrame(self, fg_color="#1e293b", corner_radius=8, border_width=1, border_color="#334155")
+            lbl = ctk.CTkLabel(toast, text=f"✓  {message}", font=ctk.CTkFont(size=12, weight="bold"), text_color="#38bdf8")
+            lbl.pack(padx=16, pady=8)
+            toast.place(relx=0.97, rely=0.96, anchor="se")
+            self.after(2000, lambda: toast.destroy() if toast.winfo_exists() else None)
+        except Exception:
+            pass
+
+    def _copy_to_clipboard(self, text, label="Copié"):
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            self.update()
+            self._show_toast(f"{label} copié dans le presse-papier !")
+        except Exception:
+            pass
+
+    def _open_in_explorer(self, path):
+        try:
+            norm = os.path.normpath(path)
+            if os.path.exists(norm):
+                subprocess.run(['explorer', '/select,', norm])
+            else:
+                parent = os.path.dirname(norm)
+                if os.path.exists(parent):
+                    os.startfile(parent)
+                else:
+                    messagebox.showerror("Erreur", f"Chemin introuvable :\n{norm}")
+        except Exception as e:
+            messagebox.showerror("Erreur", f"Impossible d'ouvrir l'explorateur : {e}")
+
+    def _get_file_badge_info(self, name, is_dir):
+        """Retourne (type_label, badge_color, icon) selon l'extension."""
+        if is_dir:
+            return "DIR", "#0369a1", "📁"
+        ext = os.path.splitext(name)[1].lower().lstrip(".")
+        if not ext:
+            return "DOC", "#475569", "📄"
+        if ext == "pdf":
+            return "PDF", "#c2410c", "📕"
+        elif ext in ("xlsx", "xls", "csv", "ods"):
+            return ext.upper(), "#15803d", "📊"
+        elif ext in ("docx", "doc", "odt", "txt", "rtf", "md"):
+            return ext.upper()[:4], "#1d4ed8", "📝"
+        elif ext in ("dwg", "dxf", "step", "stp", "cad"):
+            return ext.upper()[:4], "#0e7490", "📐"
+        elif ext in ("zip", "rar", "7z", "tar", "gz"):
+            return ext.upper()[:4], "#b45309", "📦"
+        elif ext in ("jpg", "jpeg", "png", "gif", "svg", "bmp", "webp"):
+            return ext.upper()[:4], "#7e22ce", "🖼️"
+        elif ext in ("mp4", "mkv", "avi", "mov", "mp3", "wav"):
+            return ext.upper()[:4], "#a21caf", "🎬"
+        elif ext in ("exe", "bat", "ps1", "sh", "msi"):
+            return ext.upper()[:4], "#be123c", "⚙️"
+        return ext.upper()[:4], "#334155", "📄"
 
     def _remap_drive_letter(self, path):
         """Remplace la lettre de lecteur dans un chemin si une lettre NAS est configurée."""
@@ -343,45 +582,135 @@ $s.Save()
 
     def update_db_indicator(self):
         exists = os.path.exists(self.db_path) if self.db_path else False
-        color = "green" if exists else "red"
+        color = "#10b981" if exists else "#ef4444"  # Vert émeraude ou rouge moderne
         self.db_status_indicator.configure(fg_color=color)
         if hasattr(self, 'db_status_label'):
-            self.db_status_label.configure(text="DB Connectée" if exists else "DB Manquante")
+            self.db_status_label.configure(
+                text="DB Prête" if exists else "DB Manquante",
+                text_color="#10b981" if exists else "#ef4444"
+            )
 
-    # --- SEARCH VIEW ---
+    # --- SEARCH VIEW (REDESIGN MODERNE & OPTIMISÉ LAPTOP) ---
     def init_search_view(self):
         self.search_frame.grid_columnconfigure(0, weight=1)
         self.search_frame.grid_rowconfigure(2, weight=1)
 
-        # Barre de recherche premium
-        search_container = ctk.CTkFrame(self.search_frame, corner_radius=15, height=100)
-        search_container.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 20))
-        search_container.grid_columnconfigure(0, weight=1)
+        # Barre de recherche Spotlight moderne
+        search_card = ctk.CTkFrame(self.search_frame, corner_radius=12, fg_color=THEME_CARD, border_width=1, border_color=THEME_CARD_BORDER)
+        search_card.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 14))
+        search_card.grid_columnconfigure(1, weight=1)
 
-        self.search_entry = ctk.CTkEntry(search_container, placeholder_text="🔍 Mots-clés, nom partiel, extension (ex: fact mars 2024, cisco 199)...", 
-                                       height=50, font=ctk.CTkFont(size=15), border_width=0)
-        self.search_entry.grid(row=0, column=0, padx=20, pady=20, sticky="ew")
+        # Icône loupe
+        loupe_lbl = ctk.CTkLabel(search_card, text="🔍", font=ctk.CTkFont(size=18), text_color=THEME_TEXT_MUTED)
+        loupe_lbl.grid(row=0, column=0, padx=(18, 8), pady=12)
+
+        # Champ de saisie moderne
+        self.search_entry = ctk.CTkEntry(
+            search_card,
+            placeholder_text="Rechercher par mots-clés, nom partiel, extension (ex: fact mars 2024, cisco 199)...",
+            height=46,
+            font=ctk.CTkFont(size=14),
+            border_width=0,
+            fg_color="transparent",
+            text_color=THEME_TEXT_PRIMARY
+        )
+        self.search_entry.grid(row=0, column=1, padx=4, pady=10, sticky="ew")
         self.search_entry.bind("<Return>", lambda e: self.search())
+        self.search_entry.bind("<KeyRelease>", self._on_search_keyrelease)
 
-        self.search_btn = ctk.CTkButton(search_container, text="RECHERCHER", height=50, width=140, 
-                                       font=ctk.CTkFont(weight="bold"), command=self.search)
-        self.search_btn.grid(row=0, column=1, padx=(0, 20), pady=20)
+        # Bouton Effacer ✕
+        self.btn_clear_search = ctk.CTkButton(
+            search_card,
+            text="✕",
+            width=28,
+            height=28,
+            corner_radius=14,
+            fg_color="transparent",
+            hover_color="#1f293d",
+            text_color=THEME_TEXT_DIM,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._clear_search_field
+        )
+        self.btn_clear_search.grid(row=0, column=2, padx=(2, 8), pady=10)
 
-        # Filtres rapides
-        filter_frame = ctk.CTkFrame(self.search_frame, fg_color="transparent")
-        filter_frame.grid(row=1, column=0, sticky="w", pady=(0, 10))
-        
+        # Bouton Rechercher tech
+        self.search_btn = ctk.CTkButton(
+            search_card,
+            text="RECHERCHER  ↵",
+            height=42,
+            width=140,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=THEME_ACCENT,
+            hover_color=THEME_ACCENT_HOVER,
+            corner_radius=8,
+            command=self.search
+        )
+        self.search_btn.grid(row=0, column=3, padx=(4, 12), pady=10)
+
+        # Barre d'actions & filtres rapides
+        filter_bar = ctk.CTkFrame(self.search_frame, fg_color="transparent")
+        filter_bar.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        filter_bar.grid_columnconfigure(2, weight=1)
+
         self.var_dirs = tk.BooleanVar(value=True)
-        self.check_dirs = ctk.CTkCheckBox(filter_frame, text="Dossiers", variable=self.var_dirs, command=self.search)
-        self.check_dirs.pack(side="left", padx=(0, 20))
+        self.check_dirs = ctk.CTkCheckBox(
+            filter_bar,
+            text="📁 Dossiers",
+            variable=self.var_dirs,
+            command=self.search,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=THEME_TEXT_MUTED,
+            fg_color=THEME_ACCENT,
+            hover_color=THEME_ACCENT_HOVER,
+            corner_radius=4
+        )
+        self.check_dirs.grid(row=0, column=0, padx=(2, 16), sticky="w")
 
         self.var_files = tk.BooleanVar(value=True)
-        self.check_files = ctk.CTkCheckBox(filter_frame, text="Fichiers", variable=self.var_files, command=self.search)
-        self.check_files.pack(side="left")
+        self.check_files = ctk.CTkCheckBox(
+            filter_bar,
+            text="📄 Fichiers",
+            variable=self.var_files,
+            command=self.search,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=THEME_TEXT_MUTED,
+            fg_color=THEME_ACCENT,
+            hover_color=THEME_ACCENT_HOVER,
+            corner_radius=4
+        )
+        self.check_files.grid(row=0, column=1, padx=(0, 16), sticky="w")
 
-        # Résultats
-        self.results_scroll = ctk.CTkScrollableFrame(self.search_frame, corner_radius=10)
+        # Indicateur de raccourci clavier laptop discret à droite
+        laptop_hint = ctk.CTkLabel(
+            filter_bar,
+            text="Astuce portable : utilisez les flèches ↑ / ↓ pour naviguer dans les résultats sans souris • Entrée ↵ pour ouvrir",
+            font=ctk.CTkFont(size=10),
+            text_color=THEME_TEXT_DIM
+        )
+        laptop_hint.grid(row=0, column=2, sticky="e", padx=4)
+
+        # Conteneur des résultats scrollable (moderne)
+        self.results_scroll = ctk.CTkScrollableFrame(
+            self.search_frame,
+            corner_radius=10,
+            fg_color=THEME_CARD,
+            border_width=1,
+            border_color=THEME_CARD_BORDER
+        )
         self.results_scroll.grid(row=2, column=0, sticky="nsew")
+
+    def _on_search_keyrelease(self, event):
+        txt = self.search_entry.get()
+        if txt:
+            self.btn_clear_search.configure(text_color=THEME_TEXT_MUTED)
+        else:
+            self.btn_clear_search.configure(text_color="transparent")
+
+    def _clear_search_field(self):
+        self.search_entry.delete(0, tk.END)
+        self.btn_clear_search.configure(text_color="transparent")
+        self.search_entry.focus_set()
+        self.search(initial=True)
 
     # --- INDEXER VIEW ---
     def init_indexer_view(self):
@@ -1292,12 +1621,13 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
         threading.Thread(target=self._search_thread, args=(query, initial), daemon=True).start()
 
     def _search_thread(self, query, initial):
+        t0 = time.perf_counter()
         try:
             conn = sqlite3.connect(self.db_path)
             c = conn.cursor()
             
             if not query:
-                sql = "SELECT name, path, is_dir, mod_time FROM files ORDER BY id DESC LIMIT 30"
+                sql = "SELECT name, path, is_dir, mod_time FROM files ORDER BY id DESC LIMIT 40"
                 c.execute(sql)
                 rows = c.fetchall()
             else:
@@ -1351,49 +1681,197 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
                         rows = c.fetchall()
 
             conn.close()
+            elapsed_ms = (time.perf_counter() - t0) * 1000
 
-            # Retour au thread principal pour mettre à jour l'UI
-            self.after(0, lambda: self._display_results(rows, initial, query))
+            # Retour au thread principal pour affichage moderne
+            self.after(0, lambda: self._display_results(rows, initial, query, elapsed_ms))
         except Exception as e:
             self.after(0, lambda: self.loading_lbl.configure(text=f"Erreur: {str(e)}"))
 
-    def _display_results(self, rows, initial, query=""):
+    def _display_results(self, rows, initial, query="", elapsed_ms=0.0):
         if hasattr(self, 'loading_lbl') and self.loading_lbl.winfo_exists():
             self.loading_lbl.destroy()
 
+        self._result_rows_widgets = []
+        self._selected_row_index = -1
+
         if not rows:
-            ctk.CTkLabel(self.results_scroll, text="Aucun résultat trouvé", text_color="gray").pack(pady=20)
+            empty_card = ctk.CTkFrame(self.results_scroll, fg_color="transparent")
+            empty_card.pack(fill="x", pady=40)
+            ctk.CTkLabel(empty_card, text="🔍", font=ctk.CTkFont(size=32)).pack(pady=(0, 6))
+            ctk.CTkLabel(empty_card, text="Aucun résultat trouvé", font=ctk.CTkFont(size=15, weight="bold"), text_color=THEME_TEXT_MUTED).pack()
+            ctk.CTkLabel(empty_card, text="Vérifiez l'orthographe ou essayez d'autres mots-clés.", font=ctk.CTkFont(size=12), text_color=THEME_TEXT_DIM).pack(pady=(4, 0))
             return
 
-        # Affichage du compteur de résultats
+        # Header moderne avec compteur et temps d'exécution
+        header_frame = ctk.CTkFrame(self.results_scroll, fg_color="transparent")
+        header_frame.pack(fill="x", padx=4, pady=(2, 8))
+        header_frame.grid_columnconfigure(0, weight=1)
+
+        count_txt = f"{len(rows)} résultat{'s' if len(rows) > 1 else ''}"
+        if len(rows) >= 200:
+            count_txt += " (limité aux 200 premiers)"
+
+        time_txt = f" • en {elapsed_ms:.1f} ms" if elapsed_ms > 0 else ""
+        stat_badge = ctk.CTkLabel(
+            header_frame,
+            text=f"⚡ {count_txt}{time_txt}",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#38bdf8"
+        )
+        stat_badge.pack(side="left", padx=4)
+
         if not initial and query:
-            count_txt = f"{len(rows)} résultat{'s' if len(rows) > 1 else ''}"
-            if len(rows) >= 200:
-                count_txt += " (limité aux 200 premiers)"
-            count_lbl = ctk.CTkLabel(self.results_scroll, text=count_txt, font=ctk.CTkFont(size=11), text_color="#3498db")
-            count_lbl.pack(anchor="w", padx=10, pady=(2, 6))
+            q_info = ctk.CTkLabel(
+                header_frame,
+                text=f"pour « {query} »",
+                font=ctk.CTkFont(size=11),
+                text_color=THEME_TEXT_DIM
+            )
+            q_info.pack(side="left", padx=4)
 
         for i, row in enumerate(rows):
             self.add_row(i, row)
-            if i % 15 == 0: self.update_idletasks()
+            if i % 20 == 0: self.update_idletasks()
 
     def add_row(self, index, data):
         name, path, is_dir, mod_time = data
         display_path = self._remap_drive_letter(path)
-        bg = ("gray90", "gray15") if index % 2 == 0 else ("gray95", "gray18")
-        
-        row = ctk.CTkFrame(self.results_scroll, fg_color=bg, corner_radius=5)
-        row.pack(fill="x", pady=1, padx=5)
-        
-        icon = "📁" if is_dir else "📄"
-        lbl = ctk.CTkLabel(row, text=f"{icon} {name}", anchor="w", font=ctk.CTkFont(size=13))
-        lbl.pack(side="left", padx=10, pady=5)
+        badge_text, badge_color, icon = self._get_file_badge_info(name, is_dir)
 
-        path_lbl = ctk.CTkLabel(row, text=display_path, anchor="w", font=ctk.CTkFont(size=10), text_color="gray")
-        path_lbl.pack(side="left", padx=20, fill="x", expand=True)
+        # Alternance subtile de couleur de carte
+        base_bg = "#131824" if index % 2 == 0 else "#161d2b"
+        hover_bg = "#1e293b"
 
-        row.bind("<Double-Button-1>", lambda e, p=display_path: self.open_path(p))
-        lbl.bind("<Double-Button-1>", lambda e, p=display_path: self.open_path(p))
+        row = ctk.CTkFrame(
+            self.results_scroll,
+            fg_color=base_bg,
+            corner_radius=8,
+            border_width=1,
+            border_color=THEME_CARD_BORDER
+        )
+        row.pack(fill="x", pady=2, padx=4)
+        row.grid_columnconfigure(1, weight=1)
+
+        # 1. Badge type de fichier
+        badge_frame = ctk.CTkFrame(row, fg_color=badge_color, corner_radius=6, width=44, height=28)
+        badge_frame.grid(row=0, column=0, rowspan=2, padx=(10, 10), pady=8)
+        badge_frame.pack_propagate(False)
+
+        badge_lbl = ctk.CTkLabel(
+            badge_frame,
+            text=badge_text,
+            font=ctk.CTkFont(size=9, weight="bold"),
+            text_color="#ffffff"
+        )
+        badge_lbl.pack(expand=True)
+
+        # 2. Infos principales (Nom + Chemin)
+        name_lbl = ctk.CTkLabel(
+            row,
+            text=name,
+            anchor="w",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=THEME_TEXT_PRIMARY
+        )
+        name_lbl.grid(row=0, column=1, sticky="w", pady=(6, 0))
+
+        path_lbl = ctk.CTkLabel(
+            row,
+            text=display_path,
+            anchor="w",
+            font=ctk.CTkFont(size=10),
+            text_color=THEME_TEXT_DIM
+        )
+        path_lbl.grid(row=1, column=1, sticky="w", pady=(0, 6))
+
+        # 3. Actions rapides au bout de la ligne
+        actions_frame = ctk.CTkFrame(row, fg_color="transparent")
+        actions_frame.grid(row=0, column=2, rowspan=2, padx=(10, 12), pady=6, sticky="e")
+
+        btn_copy = ctk.CTkButton(
+            actions_frame,
+            text="📋 Copier",
+            width=70,
+            height=26,
+            corner_radius=6,
+            fg_color="#1e293b",
+            hover_color="#334155",
+            text_color=THEME_TEXT_MUTED,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            command=lambda p=display_path: self._copy_to_clipboard(p, "Chemin")
+        )
+        btn_copy.pack(side="left", padx=(0, 6))
+
+        btn_open_folder = ctk.CTkButton(
+            actions_frame,
+            text="📂 Dossier",
+            width=75,
+            height=26,
+            corner_radius=6,
+            fg_color="#1e293b",
+            hover_color="#334155",
+            text_color=THEME_TEXT_MUTED,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            command=lambda p=display_path: self._open_in_explorer(p)
+        )
+        btn_open_folder.pack(side="left")
+
+        # Enregistrement pour navigation clavier
+        row_record = {
+            "index": index,
+            "frame": row,
+            "orig_bg": base_bg,
+            "path": display_path,
+            "name": name
+        }
+        self._result_rows_widgets.append(row_record)
+
+        # Effet Hover dynamique
+        def on_enter(e):
+            if index != self._selected_row_index:
+                row.configure(fg_color=hover_bg, border_color="#2c3854")
+
+        def on_leave(e):
+            if index != self._selected_row_index:
+                row.configure(fg_color=base_bg, border_color=THEME_CARD_BORDER)
+
+        # Événements et interaction (clic, double clic, menu contextuel)
+        interactive_widgets = [row, badge_frame, badge_lbl, name_lbl, path_lbl]
+        for w in interactive_widgets:
+            w.bind("<Enter>", on_enter)
+            w.bind("<Leave>", on_leave)
+            w.bind("<Double-Button-1>", lambda e, p=display_path: self.open_path(p))
+            w.bind("<Button-1>", lambda e, idx=index: self._on_row_click(idx))
+            w.bind("<Button-3>", lambda e, p=display_path, n=name: self._show_context_menu(e, p, n))
+            # CRUCIAL POUR TOUCHPAD : transmission de la molette pour ne jamais bloquer le défilement
+            w.bind("<MouseWheel>", self._on_universal_mousewheel, add="+")
+
+    def _on_row_click(self, index):
+        self._selected_row_index = index
+        self._highlight_selected_row()
+
+    def _show_context_menu(self, event, path, name):
+        """Menu contextuel au clic droit sur un résultat."""
+        try:
+            menu = tk.Menu(
+                self,
+                tearoff=0,
+                bg="#161c28",
+                fg="#f1f5f9",
+                activebackground=THEME_ACCENT,
+                activeforeground="#ffffff",
+                font=("Segoe UI", 10),
+                bd=1
+            )
+            menu.add_command(label="⚡  Ouvrir", command=lambda: self.open_path(path))
+            menu.add_command(label="📂  Afficher dans l'Explorateur Windows", command=lambda: self._open_in_explorer(path))
+            menu.add_separator()
+            menu.add_command(label="📋  Copier le chemin complet", command=lambda: self._copy_to_clipboard(path, "Chemin"))
+            menu.add_command(label="🏷️  Copier le nom du fichier", command=lambda: self._copy_to_clipboard(name, "Nom"))
+            menu.tk_popup(event.x_root, event.y_root)
+        except Exception:
+            pass
 
     def open_path(self, path):
         try:
@@ -1401,7 +1879,11 @@ Utilisateur: "Montre les gros dossiers qui contiennent projet"
             if os.path.isdir(path):
                 os.startfile(path)
             else:
-                subprocess.run(['explorer', '/select,', path])
+                # Ouvrir directement le fichier avec l'application par défaut
+                try:
+                    os.startfile(path)
+                except Exception:
+                    subprocess.run(['explorer', '/select,', path])
         except Exception as e:
             messagebox.showerror("Erreur", f"Lien mort ou inaccessible: {e}")
 
